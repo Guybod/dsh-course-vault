@@ -1,316 +1,85 @@
 # dsh-course-vault
 
-把**一次课程**在几台电脑之间搬来搬去——课程内容、会话记忆、学习模式，一个插件全包。
+为 **DeepSeek Harness 官方桌面版**增加课程 ZIP 导入、课程模式和完整学习包迁移。当前对照版本：Windows 官方桌面版 0.2.0-rc.2。
 
-为「在家里台式机上学习，突然出差一个月切到笔记本，回来再迁回台式机」这种场景设计。
+课程模式与标准、PTC 等模式并列。先选择课程模式，新会话输入框才会显示「导入课程」「我的课程 / 导出」，会话头部和右下角才会显示课程入口。切到其他模式时，入口及打开的课程弹窗都会隐藏。插件使用官方扩展接口，不修改安装目录的可执行程序或 app.asar。清单中的 `platform: web` 指 Electron 桌面程序内部的界面层。
 
-## 它解决什么
+## 开始一门课
 
-| 需求 | 现状 | 本插件 |
-|---|---|---|
-| 课程内容（大纲/讲义/手搓代码/测验）跨机 | git 或手动拷 | **一键完整包**（内容 + 会话打成一个 `.dsvault`） |
-| 会话记录跨机 | DSH 只有单会话 `/export`，按不了项目、还原不了 | **按工作区收拢 + 一键导入还原进会话列表** |
-| 目标机路径不同 | — | **路径映射**：自动重写会话 header 的 `cwd` |
-| 换个电脑还要「像老师一样教」 | 每次手动贴教师提示词 | **课程模式**：与标准/PTC 平级的第 5 个 agent preset |
+1. 在新会话先选择「课程模式」，再点击「导入课程」，选择本地 `.zip`。
+2. 输入课程名称；保存位置可点击「浏览…」选择文件夹，也可手动输入。点击「检查并预览」确认课程文件、聊天数量和最终保存路径，再点击「导入并保存课程」。选择文件夹不会导入或创建课程。
+3. 点击「开始新一课」，打开课程工作区并自动选择课程模式。
 
-## 两条纪律（比功能更重要）
+```text
+保存位置/用户输入的课程名称/
+├── course.json             # 名称、课程身份、目录信息
+├── AGENTS.md               # 教师读取资料和进度的入口
+├── 01_课程大纲/             # 原始 ZIP 文件、自动生成的课程导航
+├── 02_讲解与记录/           # 学习进度、讲解笔记、导入的聊天快照
+└── 03_我的代码/             # 学员代码、复制的练习模板和数据
+```
 
-1. **进度证据走 git，会话记忆走 `.dsvault`。**
-   `03_LEARNING_STATE.md`、Notebook、你手搓的代码是**真正的进度证据**——用 git 搬。
-   `.dsvault` 只承载会话记录，它让模型「记得上次聊过什么」。
-   **跨机后模型知道进度，靠的是学习档案被 git 带过去，不是靠会话包。**
+单一顶层目录自动去掉。原始资料完整保留，导航依据 Markdown 标题和实际文件生成。`projects/`、`code/`、`src/`、`exercises/`、`data/`、`checks/` 和环境配置复制到代码目录，具体运行位置以课程说明为准。课程模式逐步讲解、让学员写核心实现，下课时保存真实进度。
 
-2. **本插件不碰课程文件，也不标记进度。**
-   导入只写 `$DSH_HOME/sessions/` 与课程内容落点；不改你的 `.md`/`.ipynb`/`.py`（除非你显式覆盖）。
+普通 ZIP 只提供资料；恢复聊天历史需要完整 `.dsvault` 包。
 
-> ⚠️ **别这样搬**：在笔记本上恢复包 → 学一个月 → 把包搬回台式机。
-> 台式机的课程文件夹还停在出发那天，搬回去会分叉。
-> 回去的正确动作是 **`git pull` 拉文本证据**，会话包单独反向导一次。
+Python 课程优先在 `03_我的代码/.venv` 建立独立环境，安装依赖、运行练习和 Notebook 内核都使用它；已有代码子项目的独立环境可沿用。先核对课程要求的 Python 版本，保存依赖清单、锁文件和环境验证记录，不使用全局 pip 安装课程依赖。插件生成的代码目录说明和课程导师规则会引导用户完成设置；导入课程时不会自动安装依赖。
 
-## 安装
+学员写完后说「写好了」或「帮我检查」，课程导师会直接读取代码，用课程独立环境运行相关练习或检查，并查看实际输出、错误和退出码，再给提示。核心代码由学员写；不用默认把代码和终端输出复制到聊天。工具无法访问的外部输出或需要学员交互的步骤，才由学员提供必要信息。
 
-```bash
-# 预构建（推荐，无需构建授权）
-dsh plugin --profile default add dsh-course-vault
+## 学到一半换电脑
 
-# 或从 GitHub 源码（pnpm 会拦截构建脚本，按提示加 allowBuilds 后重试）
+在「我的课程」选择课程，点击「导出完整课程」，再点击下载链接。把 `.dsvault` 文件带到另一台电脑，安装官方 Harness 和本插件后，在「导入课程」中选择它即可。
+
+完整包每次包含课程文件、学习进度、讲解笔记、自己的代码和**全部相关聊天的最新记录**。同一聊天继续产生的新消息也会更新到下一次完整包，不依赖以前的包或 git。
+
+导入把原生聊天恢复到目标机的 Harness 会话存储，并挂到课程工作区。「之前的聊天」可以打开原会话继续使用。课程子目录中的会话保留相对路径，父会话关联的子会话一同保存；无关工作区的聊天不打包。历史工具调用中的绝对路径作为历史原文保留，新操作使用目标机当前工作目录。
+
+换机前请结束正在生成的回复并更新进度。模型密钥、用户级插件和课程运行环境需在新电脑配置。
+
+## 安装与更新
+
+在官方桌面版插件管理界面安装 GitHub 仓库 `Guybod/dsh-course-vault`；CLI 也可使用：
+
+```powershell
 dsh plugin --profile default add github:Guybod/dsh-course-vault
 ```
 
-装完会做两件事：
+本地源码或压缩安装包按宿主的插件管理方式安装。仓库 `private: true`，没有声明发布到 npm。客户端插件或提示词更新后需要完整退出并重新启动 Harness。
 
-1. 在 `ctx.webServer` 上挂 `/dsh-course` 前缀通道（第三方插件唯一稳定的直连方式）；
-2. 把**课程模式** preset 同步到 `$DSH_HOME/.agent-presets/course/`（缺失或过期才写）。
+0.2.x 用 `cordis.patch.yml` 声明课程模式；旧版目录式 preset 的兼容代码保留。实际界面和原生聊天迁移以官方 0.2.0-rc.2 为目标。
 
-### 换机时若 `dsh plugin` 报 `'pnpm' is not recognized`
+## 导入和冲突
 
-`dsh plugin` 会把命令转发给 pnpm，所以机器上得有 pnpm 在 PATH 里。DSH 桌面端自带一份运行时，
-但**只提供 `pnpm.mjs`，没有 `.cmd` 外壳**，命令行调用时会报找不到 pnpm。建一个 shim 即可（真实踩过）：
+- 验证 ZIP 路径、CRC、会话和内容 SHA-256 后再写入。普通 ZIP 创建新课程，不覆盖已有同名目录。
+- 已有课程预览显示文件和聊天冲突，默认保留本机版本。选择更新才替换，并先保存 `.bak-时间戳` 备份。
+- 已加载的聊天拒绝替换。同一原生聊天不能在本机复制到两个课程路径；请更新原课程或在另一台电脑恢复。
+- 旧版完整 `.dsvault` 保留原目录结构，仍可通过课程列表打开或导出。
+- 支持 Store / Deflate ZIP；拒绝目录穿越、Windows 非法文件名、符号链接、重复路径。不支持加密、分卷、ZIP64 或非 UTF-8 文件名。
+- 导入上限：归档 512 MiB，解压文件合计 1 GiB。聊天需为当前 V4 Zstandard 格式。损坏或缺失文件会拒绝导入；磁盘满等写入故障可能留下部分文件，请保留原包。
+- 导出排除 `.git`、`node_modules`、`.venv`、`venv`、Python 缓存和历史导出目录，保留依赖清单和锁文件。换机后在 `03_我的代码` 重建环境并重新安装课程依赖。
 
-```powershell
-$shim = "$env:USERPROFILE\.dsh\shim"
-New-Item -ItemType Directory -Path $shim -Force | Out-Null
-$node = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
-$pnpm = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs"
-Set-Content "$shim\pnpm.cmd" "@echo off`r`n`"$node`" `"$pnpm`" %*" -Encoding ASCII
-$env:PATH = "$shim;$env:PATH"   # 之后 dsh plugin 就能用
-```
-
-## 用法
-
-## 用法（推荐：会话头部按钮）
-
-插件带**客户端 UI**：装好后在**会话头部右侧工具区**（官方「会话日志」导出按钮旁边）会多出三个按钮：
-
-| 按钮 | 做什么 |
-|---|---|
-| **导出课程包** | 问你课程文件夹路径（会先猜已注册工作区里像课程的那个）→ 在该文件夹的 `sessions\` 里生成 `.dsvault`（内容 + 会话） |
-| **导入课程包** | 问包路径与落点 → 先出**预检**（新增/相同/冲突）→ 确认后才写入；**并顺手把课程文件夹注册成工作区** |
-| **设为默认模式** | 把 `agent-preset-registry.selectedDefault` 设成 `course`，以后新建会话默认就是课程模式 |
-
-导入的两条安全线在 UI 里同样生效：**预检不算写入**，**内容冲突默认不覆盖**（保留本机版本）。
-
-> 改动客户端 UI 后需要**重启 DSH** 才会生效（客户端 bundle 在启动时装配）。
-
-## 用法（命令行，适合批量/自动化）
-
-两个脚本，**不用装东西、不用 DSH 在跑**：
-
-### 导出课程包
+## 开发验证
 
 ```powershell
-# 完整包（课程内容 + 该工作区的会话记录）→ 落到 <课程文件夹>\sessions\
-node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course"
-
-# 只导会话（日常来回搬，秒级）
-node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course" --sessions-only
-
-# 忽略账本，全量重导
-node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course" --all
+npm test
+npm pack --dry-run
 ```
 
-输出示例：
+新增测试独立验证课程导入、同一聊天续写、跨机恢复、路径映射、冲突和坏包，不依赖个人聊天。部分旧测试在有本机 Harness 历史时进行真实日志对照。
 
-```
-[content] 内容 146 个文件（952489 B）
-[write] 写入 …\sessions\LLM_VLA_Handwritten_Course-20261001.dsvault
-
-=== 导出完成 ===
-大小       : 0.96 MB
-sha256     : 40197868…
-内容文件   : 146 个（sha256 失败 0）
-```
-
-### 导入课程包（换电脑后）
+使用已安装官方桌面版的自带代码建立隔离环境，不改真实用户配置：
 
 ```powershell
-# 1) 先只看差异，一个字节都不写
-node tools/import.mjs "…\LLM_VLA_Handwritten_Course-20261001.dsvault" --to "D:\code\LLM_VLA_Handwritten_Course"
-
-# 2) 确认无误再落盘
-node tools/import.mjs "…\LLM_VLA_Handwritten_Course-20261001.dsvault" --to "D:\code\LLM_VLA_Handwritten_Course" --apply
+node tools/prepare-desktop-smoke.mjs "D:\DeepSeek Harness\resources\app.asar"
+$env:DSH_HOME = "$PWD\.dev\home"
+node .dev/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js --profile default --no-open --host 127.0.0.1 --port 19283
 ```
 
-两条默认安全线：
-
-- **不带 `--apply` 就是 dry-run**，只报「新增 / 相同 / 冲突」；
-- **冲突（本机改过、包里也有一份）默认不覆盖**，只列出来；要覆盖加 `--replace`（建议先 git 提交一次好回退）。
-- 会话永远不覆盖本机已有的同 id 会话（要覆盖同样加 `--replace`）。
-- `--target D:\别的路径` 可以把会话映射到任意工作区（会重写会话 header 的 `cwd`）。
-
-### 关于「包里有没有我的聊天记录」
-
-包里的**会话**按**工作区路径**收拢：只有「cwd 等于课程文件夹」的会话会被收进去。
-所以想让聊天记录进包，要在 DSH 里**把课程文件夹打开为工作区**（侧边栏的「工作区」加它），
-在那里上课，然后再导出——那时 `sessions` 才会有内容，导出日志会显示 `读取 N 个会话的日志`。
-
-## 用法（编程接口）
-
-```js
-import { exportWorkspaceSessions } from 'dsh-course-vault/src/core/export.js'
-
-// 导出：课程内容 + 全部会话，一个文件
-await exportWorkspaceSessions({
-  dshHome: 'C:\\Users\\you\\.dsh',
-  workspace: 'D:\\code\\LLM_VLA_Handwritten_Course',   // 会话归属的工作区
-  contentRoot: 'D:\\code\\LLM_VLA_Handwritten_Course', // 要打包的课程文件夹
-  sessionsDir: 'D:\\code\\LLM_VLA_Handwritten_Course\\sessions',
-})
-// → sessions/LLM_VLA_Handwritten_Course-20261001.dsvault + exported.json 账本
-```
-
-```js
-import { importFullVault } from 'dsh-course-vault/src/core/import.js'
-
-// 先看差异（不写盘）
-const dry = await importFullVault({
-  vaultPath: '...dsvault',
-  dshHome: HOME,
-  contentTarget: 'D:\\code\\LLM_VLA_Handwritten_Course', // 内容落点
-  targetCwd: 'D:\\code\\LLM_VLA_Handwritten_Course',     // 会话映射到的工作区
-})
-
-// 确认后落盘
-await importFullVault({ ...same, apply: true })
-```
-
-只搬会话（日常来回搬，秒级）：
-
-```js
-await exportWorkspaceSessions({ dshHome, workspace, sessionsDir }) // 不给 contentRoot
-```
-
-### 通过 RPC 通道（UI / 脚本）
-
-`POST /dsh-course/<endpoint>`，遵循官方 client-request 信封：
-
-| 端点 | 作用 |
-|---|---|
-| `runtime/get` | 版本、DSH_HOME、profile |
-| `preset/status` / `preset/sync` | 课程模式是否就位 / 手动同步 |
-| `workspace/list` | 会话根下所有工作区 |
-| `vault/list` / `vault/inspect` | 列出 / 查看并逐项校验 `.dsvault` |
-| `course/card` | 读课程卡，如实报告关键文件存在性 |
-| `course/export` | 一键导出（`sessionsOnly: true` 只导会话） |
-| `course/import-plan` | 只看差异 |
-| `course/import` | 一键导入（必须 `apply: true`） |
-
-### 课程模式
-
-装好后**新建会话**，在模式选择器里选「课程模式」。
-
-- 它是 `standard` 的完整副本，只改三处：persona 换任课老师、追加 `course-tutor` 技能、其余工具能力不变；
-- 教学规则：先读课程自己的 `01_TEACHER_PROMPT.md` 与 `03_LEARNING_STATE.md`；每轮只讲一个概念、只给一项小任务；
-  卡住时按 **H0→H1→H2→H3** 逐级提示，一次只升一级；
-- **默认不代写**：核心实现要你自己写，代码片段给在对话里；**默认不用写文件的工具改你的学习代码**；
-  你若坚持要它写，它会写，但会先说一句「自己手写一遍效果更好」；
-- 只有你说「这一步给出参考代码」时才给某一段，并安排一道不同输入/结构的独立复写。
-
-> 约束：DSH 的模式**只能在尚未产出内容的空白会话上切换**，已有对话切不了；改默认值只影响之后新建的会话。
-> 想让新课默认走课程模式：设置里把 `agent-presets.default` 改成 `course`。
-
-## 包结构
-
-`.dsvault` 是标准 ZIP，7-Zip / 资源管理器可直接打开：
-
-```
-.dsvault/manifest.json      清单：内容清单 + 会话清单，逐文件 sha256
-.dsvault/content/**          课程文件夹（outline / lessons / projects / assessments / 学习档案…）
-.dsvault/sessions/<id>/session.v4.jsonl.zstd
-```
-
-导入的内容合并策略：逐文件比 sha256，分「新增 / 相同 / 冲突」；
-**冲突默认不覆盖**，列出来让你决定（`replace: true` 才覆盖）。会话永远不动你本机已有的。
-
-## 实现要点
-
-- **多 frame 解压**：DSH 把每个持久化批次写成独立、带 checksum 的 zstd frame 并拼接。
-  Node 内置 API 解不开（同步只解第一个 frame，流式报 `ZSTD_error_prefix_unknown`），
-  因此按 frame 魔数切分后逐 frame 解压（真实会话 322 个 frame 零失败）。
-- **只重写 header frame**：跨机路径映射只重压第一个 frame（header），**事件 frame 按原字节拷贝**。
-  所以迁移是无损的，也不会碰到 DSH 的打包分片重编码。
-- **压缩端对齐 checksum**：DSH 写日志用 `ZSTD_c_checksumFlag`，新压的 header frame 必须一致。
-- **目录算法与 DSH 逐字节一致**：项目目录 `projectKey(cwd)`、会话目录 `encodeSegment(id)`；
-  测试用本机真实目录名做锚点断言，规则漂移会立刻失败。
-- **零第三方依赖**：自带 ZIP 写入器（store 法）+ `node:zlib`，跨机安装不需要联网取依赖。
-- **RPC 通道不用 `connection.rpc.handle`**：它把 owner 固定成 connection 插件自身上下文，
-  第三方插件调用会拿到 `undefined` 并让 fiber 失败；改用自建 `webServer` 前缀路由。
-
-## 测试
-
-```bash
-node test/run-all.js
-```
-
-覆盖：目录算法与 DSH 一致、真实会话解码、header 重写后其余 frame 字节零改动、篡改检测、
-ZIP 可被 Windows 自带解压、导出→校验→导入→幂等、坏包拒装、
-一键完整包往返（含冲突保护）、preset 同步幂等、host 层加载与端点参数校验。
-
-> Windows 沙箱下不要用 `node --test test/`（需要 spawn 子进程，会命中 `spawn EPERM` 边界），
-> 用 `test/run-all.js`（进程内 import）。
-
-
-## 出事了怎么办（启动不起来 / 插件全没了）
-
-DSH 在启动失败时会**自愈**：把激活失败的 bundle 从 profile 的 `dsh.profile.bundles` 里剔掉。
-所以"插件消失了"通常意味着它上次启动时失败了。
-
-### 第一步：看插件日志
-
-插件会在 `<DSH_HOME>/logs/dsh-course-vault.log` 里写自己的一生（同步写、不抛错）：
-
-- 日志里**有** `[boot] boot {...}` → 插件被加载到了（失败在之后）；
-- 日志里**没有** → 失败发生在更早的阶段：模块**解析/加载**，或者
-  `package.json` 的 `dsh.client`/**bundle 声明**有问题（那时代码一行都没跑）。
-
-这一条判断能直接把人从"靠猜"里救出来。
-
-### 第二步：一条命令恢复
+提示词修改后重新生成补丁：
 
 ```powershell
-node tools/recover-minimal-bundles.mjs default        # 先看它准备写什么：加 --dry
+node scripts/gen-patch.mjs "D:\DeepSeek Harness\resources\app.asar" ".dev/dsh"
 ```
 
-它只把 bundles 写回 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`（桌面端一定能解析的两个），
-**不动依赖、不动 node_modules、不动你的 patch 层**，并先备份原清单。
-重启后到「插件」面板按需重新启用。
-
-### 改启动期配置的纪律（用一次"启动不了"换来的）
-
-1. **一次只改一个变量**，每步重启验证；
-2. 改之前先备份 `profiles/<name>/package.json`；
-3. 插件代码里 `apply()` 必须整体包 try/catch —— **插件失败不该拖垮宿主**；
-4. 拿不到启动日志之前，**不要**盲改 `dsh.client` / `exports` 这类启动期声明。
-
-## 已知限制
-
-- 尚未提供图形界面：目前通过 RPC 通道 / Node API 使用；UI 挂在既有插槽上的计划见下。
-- 课程模式 preset 依赖 `$DSH_HOME/.agent-presets`；若该目录是被整合包换指的 junction，
-  切换 profile 后可能丢失——重新 `preset/sync` 即可恢复（插件启动时也会自检）。
-- `.dsvault` 是二进制，建议加入课程仓库的 `.gitignore`，会话记录不要进 git。
-- 导出**当前正在对话的会话**时，磁盘上只有"最近一次 flush 的前缀"；已在写入的会话会被冻结在
-  导出那一刻（源文件随后继续增长），这是预期行为，不是损坏。
-
-## 实测记录（v0.1.0）
-
-在 `dsh-base + dsh-web-app` 的最小 web profile 上真启动验证过：
-
-| 验证项 | 结果 |
-|---|---|
-| 插件加载（`--dump-config` 出现 `# == dsh-course-vault` 层） | ✅ |
-| 真启动挂上 `/dsh-course` 通道（`GET /dsh-course/health` → 200） | ✅ |
-| `preset/status` → 课程模式 `installed: true, upToDate: true` | ✅ |
-| 插件自动把课程模式同步到 `$DSH_HOME/.agent-presets/course/` | ✅ |
-| `course/card` 读真实课程卡（`01_TEACHER_PROMPT.md` 等三份文件均 present） | ✅ |
-| 一键完整包：146 个课程文件 + 1 条 1.7 MB 真实会话 → 3.4 MB 包，sha256 逐项通过 | ✅ |
-| 导入到另一路径：内容 146 文件全落位、会话 header 改写为新 cwd、`id`/`agentPreset` 保留 | ✅ |
-| 幂等：同包再导 → 会话全 skip、内容全 same，不覆盖、不重复 | ✅ |
-| 导入后 DSH 能识别：`workspace/list` 出现新路径（1 条会话） | ✅ |
-
-> 仍未验证的一条：**导入的会话在 GUI 会话列表里的最终呈现需要重启一次桌面端**才能确认
-> （CLI 启动的验证实例已经能看到该 workspace，但桌面 GUI 的列表渲染未实测）。
-
-## 踩过的坑（开发时真实遇到，写下来免得再犯）
-
-1. **`inject` 会拖垮别人的 profile**：把 `webServer` / `profileContext` 写进 `inject` 后，
-   没有 `dsh-web-app` 的最小 profile 会因 `assertEntriesActivated` **整体启动失败**。
-   正确做法是 `inject = []` + 全部走 `ctx.get()`。
-2. **未 inject 的服务不能用属性访问，可选链也挡不住**：`ctx?.connection` / `ctx?.logger` 会抛
-   `cannot get property "X" without inject`，而 webserver 的 `handle()` 把路由抛错统一包成
-   **400 空响应**——症状是"通道没反应"，不是 500。定位方法是往临时日志写文件。
-3. **PowerShell 往返会毁掉 UTF-8 源文件**：用 `Get-Content -Raw` + `Set-Content` 批改中文源文件，
-   读取按 ANSI 解码、写回再编码，**中文全乱码、反引号丢失、语法直接坏掉**。改代码只用 edit 工具。
-
-## 路线
-
-- [x] 会话按工作区收拢 / 一键导出 / 一键导入 / 路径映射
-- [x] 一键完整包（课程内容 + 会话）
-- [x] 课程模式 preset（含 `course-tutor` 技能）
-- [x] host 入口 + `/dsh-course` RPC 通道
-- [ ] 真实服务上验证「导入后进入会话列表」
-- [ ] UI：`sidebar.workspaces`（课程包列表）、`conversation.session.header.utilities`（课程包按钮）、设置页工作台
-- [ ] 课程卡 `course.config.yaml` 的完整 schema 与进度账本工具
-
-## License
-
-MIT
+隔离浏览器测试验证桌面程序的同一客户端和服务代码；不等于已经验收 Electron 外壳的文件选择器及下载行为，官方桌面窗口仍需实际验收。

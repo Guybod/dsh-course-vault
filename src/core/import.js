@@ -16,8 +16,8 @@ import fsp from 'node:fs/promises'
 
 import { listZip, readZipEntry } from './zip.js'
 import { readHeader, replaceHeader, validateTranscript } from './zstd-codec.js'
-import { targetPaths } from './session-store.js'
-import { samePath } from './paths.js'
+import { targetPaths, scanSessions } from './session-store.js'
+import { samePath, assertSafeRelative } from './paths.js'
 import { sha256, writeFileAtomic, isFile } from './fsx.js'
 import { planContentImport, applyContentImport } from './content.js'
 
@@ -33,6 +33,7 @@ export async function openVault(vaultPath) {
     throw new Error(`读不到整合包：${vaultPath}（${err.message}）`)
   }
   const entries = listZip(buf)
+  if (entries.reduce((total, e) => total + e.size, 0) > 1024 * 1024 * 1024) throw new Error('课程包解压后超过 1 GiB')
   const manifestEntry = entries.find((e) => e.name === '.dsvault/manifest.json')
   if (!manifestEntry) throw new Error('不是有效的 .dsvault：缺少 .dsvault/manifest.json')
   let manifest
@@ -42,10 +43,15 @@ export async function openVault(vaultPath) {
     throw new Error(`manifest.json 解析失败：${err.message}`)
   }
   if (manifest.format !== 'dsvault') throw new Error(`格式标记不对：${manifest.format}`)
+  if (manifest.vaultVersion !== 1) throw new Error(`不支持的课程包版本：${manifest.vaultVersion}`)
   if (!Array.isArray(manifest.sessions)) throw new Error('manifest.sessions 不是数组')
 
   const checks = []
+  const ids = new Set()
   for (const record of manifest.sessions) {
+    if (typeof record.id !== 'string' || !record.id || ids.has(record.id)) throw new Error('会话 id 缺失或重复')
+    ids.add(record.id)
+    if (typeof record.file !== 'string' || !record.file.startsWith('.dsvault/sessions/')) throw new Error('会话文件路径无效')
     const entry = entries.find((e) => e.name === record.file)
     if (!entry) {
       checks.push({ id: record.id, ok: false, reason: '归档中缺少该会话文件', data: null })
@@ -53,17 +59,25 @@ export async function openVault(vaultPath) {
     }
     let data
     try {
-      data = readZipEntry(buf, record.file)
+      data = readZipEntry(buf, record.file, entries)
     } catch (err) {
       checks.push({ id: record.id, ok: false, reason: err.message, data: null })
       continue
     }
     const actual = sha256(data)
-    if (record.sha256 && actual !== record.sha256) {
+    if (typeof record.sha256 !== 'string' || actual !== record.sha256) {
       checks.push({ id: record.id, ok: false, reason: 'sha256 不匹配（包可能损坏或被改动）', data: null })
       continue
     }
+    const validated = validateTranscript(data)
+    if (validated.header.id !== record.id || validated.header.version !== 4) throw new Error(`会话身份或格式不匹配：${record.id}`)
     checks.push({ id: record.id, ok: true, reason: 'ok', data })
+  }
+  // 内容校验必须先于任何会话写入，不能留下半个损坏的课程。
+  for (const record of manifest.content ?? []) {
+    if (typeof record.file !== 'string' || !record.file.startsWith('.dsvault/content/')) throw new Error('内容文件路径无效')
+    const data = readZipEntry(buf, record.file, entries)
+    if (typeof record.sha256 !== 'string' || sha256(data) !== record.sha256) throw new Error(`课程文件 sha256 校验失败：${record.path}`)
   }
   return { buf, manifest, checks, entries: entries.map((e) => e.name), archiveBytes: buf.length }
 }
@@ -98,10 +112,17 @@ export async function planImport(opts) {
   )
 
   const actions = []
+  const existingSessions = await scanSessions(dshHome)
   for (const check of vault.checks) {
     const record = vault.manifest.sessions.find((s) => s.id === check.id)
-    const { projectDir, sessionDir, transcript } = targetPaths(dshHome, targetCwd, record.id)
     const header = readHeader(check.data).header
+    const sourceRoot = String(vault.manifest.sourceWorkspace ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '')
+    const sourceCwd = String(header.cwd ?? '').replace(/[\\/]+/g, '/')
+    const relativeCwd = sourceRoot && sourceCwd.toLowerCase().startsWith(sourceRoot.toLowerCase() + '/') ? sourceCwd.slice(sourceRoot.length + 1) : ''
+    const mappedCwd = relativeCwd ? path.join(targetCwd, assertSafeRelative(relativeCwd)) : targetCwd
+    const duplicate = existingSessions.find((s) => s.id === record.id && !samePath(s.cwd, mappedCwd))
+    if (duplicate) throw new Error(`本机已在另一课程路径保存同一聊天：${duplicate.cwd}。请更新原课程，或在另一台电脑导入；不能复制相同会话身份到两个工作区。`)
+    const { projectDir, sessionDir, transcript } = targetPaths(dshHome, mappedCwd, record.id)
     const exists = isFile(transcript)
     let action = 'create'
     if (exists) action = replace ? 'replace' : 'skip'
@@ -113,8 +134,8 @@ export async function planImport(opts) {
       delegationDepth: record.delegationDepth ?? 0,
       agentPreset: record.agentPreset,
       sourceCwd: header.cwd,
-      targetCwd,
-      headerRewrite: rewriteNeeded && !samePath(header.cwd, targetCwd),
+      targetCwd: mappedCwd,
+      headerRewrite: !samePath(header.cwd, mappedCwd),
       action,
       targetProjectDir: projectDir,
       targetSessionDir: sessionDir,
@@ -182,6 +203,12 @@ export async function importFullVault(opts) {
   const vault = await openVault(opts.vaultPath)
   const hasContent = Array.isArray(vault.manifest.content) && vault.manifest.content.length > 0
 
+  let preparedContent = null
+  if (hasContent && opts.sessionsOnly !== true) {
+    if (!opts.contentTarget) throw new Error('这是完整包，必须指定课程内容落点（contentTarget）')
+    preparedContent = await planContentImport(opts.contentTarget, vault.manifest.content, (file) => readZipEntry(vault.buf, file))
+  }
+
   // ① 会话段（除非明确只要内容）
   let sessionResult = null
   if (opts.contentOnly !== true) {
@@ -193,13 +220,7 @@ export async function importFullVault(opts) {
   if (hasContent && opts.sessionsOnly !== true) {
     if (!opts.contentTarget) throw new Error('这是完整包，必须指定课程内容落点（contentTarget）')
     progress('content', `检查内容差异 → ${opts.contentTarget}`)
-    const plan = await planContentImport(opts.contentTarget, vault.manifest.content, (file) => {
-      try {
-        return readZipEntry(vault.buf, file)
-      } catch {
-        return undefined
-      }
-    })
+    const plan = preparedContent
     if (opts.apply !== true) {
       contentResult = { applied: false, plan }
     } else {
@@ -269,10 +290,10 @@ export async function importVault(opts) {
     let payload = action.data
     if (action.headerRewrite) {
       // 只重压 header frame；事件 frame 原样字节拷贝（无损）
-      const nextHeader = { ...action.header, cwd: plan.targetCwd }
+      const nextHeader = { ...action.header, cwd: action.targetCwd }
       payload = replaceHeader(action.data, nextHeader)
       const recheck = readHeader(payload)
-      if (recheck.header.cwd !== plan.targetCwd) throw new Error(`路径重写后校验失败：${action.id}`)
+      if (recheck.header.cwd !== action.targetCwd) throw new Error(`路径重写后校验失败：${action.id}`)
     }
 
     // 写入前再自检一次，确保落盘的字节一定是合法会话日志

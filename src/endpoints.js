@@ -13,8 +13,11 @@ import { exportWorkspaceSessions, inspectVault, listVaults, listWorkspaces } fro
 import { planImport, importFullVault } from './core/import.js'
 import { syncCoursePreset, presetStatus } from './core/preset.js'
 import { isDir } from './core/fsx.js'
+import { previewCourse, importCourse, listCourses, exportCourse } from './core/course.js'
+import { makeTransfers } from './transfer.js'
+import { sessionsForWorkspace } from './core/session-store.js'
 
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.3.3'
 
 /** 课程卡的候选文件名（第一层为插件约定，其余为这门课已有的写法）。 */
 const CARD_CANDIDATES = ['course.config.yaml', 'course.config.yml']
@@ -106,7 +109,34 @@ async function readCourseCard(contentRoot) {
  * @param {() => object} [getCtx] 取宿主 ctx（`preset/list` 需要读 roster 服务）
  */
 export function makeEndpoints(getRuntime, getCtx = () => undefined) {
-  return {
+  const transfer = makeTransfers(() => getRuntime().home)
+  const endpoints = {
+    'course/list': async () => listCourses(getRuntime().home),
+    'course/preview': async (payload) => previewCourse({ ...payload, sourcePath: requireString(payload?.sourcePath, 'sourcePath'), dshHome: getRuntime().home }),
+    'course/add': async (payload) => {
+      if (payload?.replace === true && payload?.apply === true) {
+        const preview = await previewCourse({ ...payload, dshHome: getRuntime().home })
+        const plan = preview.type === 'vault' ? await planImport({ vaultPath: payload.sourcePath, dshHome: getRuntime().home, targetCwd: preview.root, replace: true }) : null
+        for (const action of plan?.actions ?? []) {
+          if (action.action === 'replace' && getCtx()?.get?.('sessions')?.get?.(action.id)) throw new Error('这条聊天目前已在 Harness 中加载，请关闭该会话后再更新课程，避免覆盖正在使用的记录。')
+        }
+      }
+      const result = await importCourse({ ...payload, sourcePath: requireString(payload?.sourcePath, 'sourcePath'), dshHome: getRuntime().home, apply: payload?.apply === true })
+      if (result.applied) {
+        result.workspace = await ensureWorkspaceRegistered(getCtx(), result.root, [...(result.sessions?.written ?? []), ...(result.sessions?.skipped ?? [])].map((s) => s.id))
+      }
+      return result
+    },
+    'course/portable-export': async (payload) => {
+      await getCtx()?.get?.('sessionPersistence')?.flush?.()
+      const result = await exportCourse({ dshHome: getRuntime().home, root: requireString(payload?.root, 'root') })
+      return { ...result, downloadUrl: transfer.downloadLink(result.output, result.name) }
+    },
+    'course/open': async (payload) => ensureWorkspaceRegistered(getCtx(), requireString(payload?.root, 'root')),
+    'course/history': async (payload) => {
+      const sessions = await sessionsForWorkspace(getRuntime().home, requireString(payload?.root, 'root'), { descendants: true })
+      return sessions.filter((s) => !s.delegationDepth).reverse().map((s) => ({ id: s.id, createdAt: s.createdAt, agentPreset: s.agentPreset }))
+    },
     /** 运行时事实与版本。 */
     'runtime/get': async () => {
       const rt = getRuntime()
@@ -261,11 +291,14 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
       // 只在真正写入后才动工作区注册
       let workspace = null
       if (applied && payload?.registerWorkspace === true) {
-        workspace = await ensureWorkspaceRegistered(getCtx(), contentTarget ?? targetCwd)
+        workspace = await ensureWorkspaceRegistered(getCtx(), contentTarget ?? targetCwd, result.sessions?.written?.map((s) => s.id) ?? [])
       }
       return { ...result, workspace, progress }
     },
   }
+  // 传输不作为 JSON RPC 端点；浏览器直接流式上传/下载二进制。
+  Object.defineProperty(endpoints, 'transfer', { value: transfer })
+  return endpoints
 }
 
 /**
@@ -278,7 +311,7 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
  * @param {object} ctx 宿主 ctx
  * @param {string|undefined} dir 要注册的目录
  */
-async function ensureWorkspaceRegistered(ctx, dir) {
+async function ensureWorkspaceRegistered(ctx, dir, sessionIds = []) {
   if (!dir) return { path: null, created: false, note: '未提供目录，跳过工作区注册' }
   const registry = ctx?.get?.('workspaceRegistry')
   if (!registry || typeof registry.create !== 'function') {
@@ -286,25 +319,23 @@ async function ensureWorkspaceRegistered(ctx, dir) {
   }
   try {
     const existing = typeof registry.resolveByPath === 'function' ? await registry.resolveByPath(dir) : null
-    if (existing) {
-      return {
-        path: dir,
-        created: false,
-        alreadyRegistered: true,
-        workspaceId: existing.id ?? existing.workspaceId ?? null,
-        note: '该目录已经是工作区',
-      }
+    const created = existing ?? await registry.create(dir)
+    const attached = []
+    const failures = []
+    for (const id of sessionIds) {
+      try {
+        if (typeof created.attachSession !== 'function') throw new Error('此版本不支持会话归属登记')
+        await created.attachSession(id)
+        attached.push(id)
+      } catch (err) { failures.push({ id, message: err.message }) }
     }
-  } catch {
-    /* 解析失败就走创建 */
-  }
-  try {
-    const created = await registry.create(dir)
     return {
       path: dir,
-      created: true,
+      created: !existing,
+      alreadyRegistered: !!existing,
       workspaceId: created?.id ?? created?.workspaceId ?? null,
-      note: '已注册为工作区；若侧边栏没立刻出现，切换一次视图或刷新页面。',
+      attached, failures,
+      note: failures.length ? '部分会话归属登记失败，请重启 Harness 后检查课程工作区。' : '已注册课程工作区。',
     }
   } catch (err) {
     return { path: dir, created: false, note: `注册工作区失败：${err?.message ?? err}` }

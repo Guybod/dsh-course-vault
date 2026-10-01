@@ -20,6 +20,8 @@ import { sessionsForWorkspace, summarizeSessions, scanSessions } from './session
 import { collectContentFiles, readContentEntries } from './content.js'
 import { zipSync } from './zip.js'
 import { sha256, writeFileAtomic, safeFileName, fmtTime } from './fsx.js'
+import { readCourseMetadata, CHAT_DIR } from './layout.js'
+import { scanFrames, decodeFrame, validateTranscript } from './zstd-codec.js'
 
 export const VAULT_FORMAT_VERSION = 1
 export const LEDGER_NAME = 'exported.json'
@@ -88,7 +90,7 @@ export async function exportWorkspaceSessions(opts) {
   if (!sessionsDir) throw new Error('缺少输出目录')
 
   progress('scan', `扫描 ${workspace} 的会话`)
-  const all = await sessionsForWorkspace(dshHome, workspace)
+  const all = await sessionsForWorkspace(dshHome, workspace, { descendants: !!contentRoot })
   // 允许「有内容无会话」：课程文件夹可能还没在这个工作区开过会话，
   // 但用户仍然要导出一份课程包（换机先放内容，之后再补会话）。
   if (all.length === 0 && !contentRoot) {
@@ -97,7 +99,8 @@ export async function exportWorkspaceSessions(opts) {
 
   const ledger = await readLedger(sessionsDir)
   const known = new Set(Object.keys(ledger.exported))
-  const targets = opts.all ? all : all.filter((s) => !known.has(s.id))
+  // 完整迁移包必须独立可恢复：包含所有会话的最新字节，不能依赖旧包/账本。
+  const targets = opts.all || contentRoot ? all : all.filter((s) => !known.has(s.id))
 
   if (targets.length === 0 && !contentRoot) {
     const summary = summarizeSessions(all)
@@ -113,8 +116,11 @@ export async function exportWorkspaceSessions(opts) {
   progress('collect', `读取 ${targets.length} 个会话的日志`)
   const entries = []
   const sessionRecords = []
+  const snapshots = []
+  const course = contentRoot ? await readCourseMetadata(contentRoot) : null
   for (const s of targets) {
     const data = await fsp.readFile(s.transcript)
+    validateTranscript(data)
     const rel = `.dsvault/sessions/${s.id}/${s.transcriptName}`
     entries.push({ name: rel, data })
     sessionRecords.push({
@@ -130,6 +136,12 @@ export async function exportWorkspaceSessions(opts) {
       bytes: data.length,
       sha256: sha256(data),
     })
+    if (course) {
+      const text = scanFrames(data).frames.map((f) => decodeFrame(data.subarray(f.start, f.end)).toString('utf8')).join('')
+      // 聊天原始记录保留在课程的第二个目录；Harness 中继续学习使用原生会话段。
+      snapshots.push({ rel: `${CHAT_DIR}/${safeFileName(s.id)}/session.v4.jsonl.zstd`, data })
+      snapshots.push({ rel: `${CHAT_DIR}/${safeFileName(s.id)}/session.jsonl`, data: Buffer.from(text) })
+    }
     progress('collect', `已读 ${s.id}（${data.length} B）`)
   }
 
@@ -139,11 +151,17 @@ export async function exportWorkspaceSessions(opts) {
   let contentBytes = 0
   if (contentRoot) {
     progress('content', `收集课程内容：${contentRoot}`)
-    const files = await collectContentFiles(contentRoot, { skipSiblings: [sessionsDir] })
+    const files = await collectContentFiles(contentRoot, { skipSiblings: [sessionsDir, ...(course ? [path.join(contentRoot, CHAT_DIR)] : [])] })
     const read = await readContentEntries(contentRoot, files)
     entries.push(...read.entries)
     contentRecords = read.records
     contentBytes = read.bytes
+    for (const snapshot of snapshots) {
+      const file = `.dsvault/content/${snapshot.rel}`
+      entries.push({ name: file, data: snapshot.data })
+      contentRecords.push({ path: snapshot.rel, file, bytes: snapshot.data.length, sha256: sha256(snapshot.data) })
+      contentBytes += snapshot.data.length
+    }
     progress('content', `内容 ${contentRecords.length} 个文件（${contentBytes} B）`)
   }
 
@@ -156,6 +174,7 @@ export async function exportWorkspaceSessions(opts) {
     exportedAtText: fmtTime(exportedAt),
     sourceWorkspace: workspace,
     ...(contentRoot ? { sourceContentRoot: contentRoot } : {}),
+    ...(course ? { course } : {}),
     toolkit: { name: 'dsh-course-vault', version: opts.toolVersion ?? '0.1.0' },
     dshHome,
     sessions: sessionRecords,
@@ -168,7 +187,7 @@ export async function exportWorkspaceSessions(opts) {
     },
     notes: [
       '会话记录是「连续性」材料：跨机后模型能想起上次讨论过什么。',
-      '学习进度以课程文件夹内的 03_LEARNING_STATE.md 等文本证据为准，本包不替代它。',
+      '完整包包含课程资料、学习进度、讲解笔记、学员代码和最新原生聊天。学习完成情况以学习进度中的实际证据为准。',
       '导入时若目标机工作区路径不同，插件的路径映射会重写会话 header 的 cwd。',
     ],
   }
@@ -177,8 +196,10 @@ export async function exportWorkspaceSessions(opts) {
 
   progress('pack', `打包 ${entries.length} 个条目`)
   const bytes = zipSync(entries)
+  if (contentRoot && bytes.length > 512 * 1024 * 1024) throw new Error('完整课程包超过当前导入上限 512 MiB，请移出可重新安装的环境和大型缓存后再导出')
 
   const fileName = opts.name ?? defaultVaultName(contentRoot ?? workspace, new Date(exportedAt))
+  if (path.basename(fileName) !== fileName || !fileName.endsWith('.dsvault')) throw new Error('包名必须是以 .dsvault 结尾的文件名')
   const outPath = path.join(sessionsDir, fileName)
   progress('write', `写入 ${outPath}`)
   await writeFileAtomic(outPath, bytes)

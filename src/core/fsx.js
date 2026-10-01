@@ -11,8 +11,8 @@ import fsp from 'node:fs/promises'
 import crypto from 'node:crypto'
 import path from 'node:path'
 
-/** 递归列出目录下的文件（返回绝对路径），跳过符号链接目录。 */
-export async function walkFiles(dir, out = []) {
+/** 递归列出文件（绝对路径），跳过符号链接；可在进入目录前排除生成物。 */
+export async function walkFiles(dir, out = [], opts = {}) {
   let entries
   try {
     entries = await fsp.readdir(dir, { withFileTypes: true })
@@ -22,7 +22,9 @@ export async function walkFiles(dir, out = []) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name)
     if (entry.isSymbolicLink()) continue
-    if (entry.isDirectory()) await walkFiles(full, out)
+    if (entry.isDirectory()) {
+      if (!opts.skipDirectory?.(full, entry.name)) await walkFiles(full, out, opts)
+    }
     else if (entry.isFile()) out.push(full)
   }
   return out

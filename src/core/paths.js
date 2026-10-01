@@ -85,6 +85,10 @@ export function assertSafeRelative(rel) {
   if (/^[A-Za-z]:/.test(rel)) throw new Error(`拒绝盘符路径：${rel}`)
   const parts = rel.split(/[\\/]+/)
   if (parts.includes('..')) throw new Error(`路径含危险段 '..'：${rel}`)
+  if (parts.some((p) => /[<>:"|?*\u0000-\u001f]/.test(p) || /[. ]$/.test(p) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p))) {
+    throw new Error(`路径含不安全的文件名：${rel}`)
+  }
+  if (parts.includes('.')) throw new Error(`路径含危险段 '.'：${rel}`)
   if (parts.includes('')) return parts.filter(Boolean).join('/')
   return parts.join('/')
 }

@@ -46,6 +46,7 @@ const U32_MAX = 0xffffffff
  * @returns {Buffer}
  */
 export function zipSync(entries, opts = {}) {
+  if (entries.length >= 65535) throw new Error('条目过多，未实现 ZIP64')
   const mtime = opts.mtime ?? new Date()
   const dosTime = toDosTime(mtime)
   const locals = []
@@ -132,12 +133,20 @@ function toDosTime(date) {
  * @returns {Array<{name:string,size:number,crc:number,offset:number}>}
  */
 export function listZip(buf) {
-  const eocdIdx = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+  let eocdIdx = -1
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50 && i + 22 + buf.readUInt16LE(i + 20) === buf.length) { eocdIdx = i; break }
+  }
   if (eocdIdx < 0) throw new Error('不是有效的 ZIP：找不到中央目录结尾记录')
+  if (buf.readUInt16LE(eocdIdx + 4) || buf.readUInt16LE(eocdIdx + 6)) throw new Error('不支持分卷 ZIP')
   const count = buf.readUInt16LE(eocdIdx + 10)
   let cursor = buf.readUInt32LE(eocdIdx + 16)
+  const centralEnd = cursor + buf.readUInt32LE(eocdIdx + 12)
+  if (count === 65535 || cursor === U32_MAX || centralEnd > eocdIdx) throw new Error('不支持 ZIP64 或中央目录损坏')
   const out = []
+  const seen = new Set()
   for (let i = 0; i < count; i += 1) {
+    if (cursor + 46 > centralEnd) throw new Error('ZIP 中央目录被截断')
     if (buf.readUInt32LE(cursor) !== 0x02014b50) throw new Error(`中央目录第 ${i} 项签名错误`)
     const flags = buf.readUInt16LE(cursor + 8)
     const size = buf.readUInt32LE(cursor + 24)
@@ -146,23 +155,40 @@ export function listZip(buf) {
     const commentLen = buf.readUInt16LE(cursor + 32)
     const localOffset = buf.readUInt32LE(cursor + 42)
     const nameBuf = buf.subarray(cursor + 46, cursor + 46 + nameLen)
-    const name = nameBuf.toString(flags & 0x0800 ? 'utf8' : 'latin1')
-    out.push({ name, size, crc: buf.readUInt32LE(cursor + 16), offset: localOffset })
+    const name = nameBuf.toString('utf8')
+    if (name.includes('\uFFFD')) throw new Error('ZIP 文件名不是 UTF-8，请将压缩包另存为 UTF-8 ZIP')
+    const normalized = assertSafeRelative(name.replace(/[/\\]+$/, ''))
+    if (seen.has(normalized.toLowerCase())) throw new Error(`归档内路径重复：${name}`)
+    seen.add(normalized.toLowerCase())
+    const attributes = buf.readUInt32LE(cursor + 38)
+    if (((attributes >>> 16) & 0xf000) === 0xa000) throw new Error(`拒绝 ZIP 符号链接：${name}`)
+    if (flags & 1) throw new Error('不支持加密 ZIP')
+    const method = buf.readUInt16LE(cursor + 10)
+    if (method !== 0 && method !== 8) throw new Error(`不支持 ZIP 压缩方法：${method}`)
+    const compressedSize = buf.readUInt32LE(cursor + 20)
+    if (size === U32_MAX || compressedSize === U32_MAX) throw new Error('不支持 ZIP64')
+    out.push({ name, size, compressedSize, method, flags, directory: /[/\\]$/.test(name), crc: buf.readUInt32LE(cursor + 16), offset: localOffset })
     cursor += 46 + nameLen + extraLen + commentLen
+    if (cursor > centralEnd) throw new Error('ZIP 中央目录被截断')
   }
   return out
 }
 
 /** 从 ZIP 中取出一个条目（store 法，因此可直接按偏移切片）。 */
-export function readZipEntry(buf, name) {
-  const entry = listZip(buf).find((e) => e.name === name)
+export function readZipEntry(buf, name, index) {
+  const entry = (index ?? listZip(buf)).find((e) => e.name === name)
   if (!entry) throw new Error(`归档中不存在：${name}`)
   const off = entry.offset
+  if (off + 30 > buf.length) throw new Error(`本地文件头被截断：${name}`)
   if (buf.readUInt32LE(off) !== 0x04034b50) throw new Error(`本地文件头签名错误：${name}`)
   const nameLen = buf.readUInt16LE(off + 26)
   const extraLen = buf.readUInt16LE(off + 28)
   const start = off + 30 + nameLen + extraLen
-  const data = buf.subarray(start, start + entry.size)
+  if (start + entry.compressedSize > buf.length) throw new Error(`ZIP 条目被截断：${name}`)
+  const compressed = buf.subarray(start, start + entry.compressedSize)
+  if (entry.size > 512 * 1024 * 1024) throw new Error(`ZIP 单文件超过 512 MiB：${name}`)
+  const data = entry.method === 8 ? zlib.inflateRawSync(compressed, { maxOutputLength: Math.max(1, entry.size) }) : compressed
+  if (data.length !== entry.size) throw new Error(`ZIP 条目长度不匹配：${name}`)
   const actual = crc32(data)
   if (actual !== entry.crc) throw new Error(`CRC32 校验失败：${name}`)
   return data

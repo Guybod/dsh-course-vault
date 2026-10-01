@@ -24,37 +24,40 @@ export const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 const CHECKSUM_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
 
 /**
- * 按魔数把拼接容器切分成 frame 区间。
- *
- * 已知局限：若 frame 的**压缩数据**里恰好出现魔数字节序列，会被误切成两个区间。
- * 这是可接受的取舍——切分结果随后逐个交给 zstd 解压，被切坏的区间会直接解压失败
- * 并以明确错误暴露出来，不会静默产出错误数据。真实会话文件上已验证 322 个 frame
- * 全部正确切分。
+ * 按 Zstandard header 与 block 长度切分，避免压缩内容中的魔数造成误切。
  *
  * @param {Buffer} buffer 整个文件字节
  * @returns {{frames: Array<{start:number,end:number}>, headerBytesBefore: number}}
  */
-export function scanFrames(buffer) {
-  const starts = []
-  let cursor = 0
-  for (;;) {
-    const idx = buffer.indexOf(ZSTD_MAGIC, cursor)
-    if (idx < 0) break
-    starts.push(idx)
-    cursor = idx + ZSTD_MAGIC.length
-  }
+export function scanFrames(buffer, { firstOnly = false } = {}) {
   const frames = []
-  if (starts.length === 0) {
-    // 没有魔数：交给调用方按“非法产物”处理
-    return { frames, headerBytesBefore: buffer.length }
+  let offset = 0
+  const need = (bytes) => { if (offset + bytes > buffer.length) throw new Error('会话日志含未写完的 Zstandard frame，请等待当前回复结束后再导出') }
+  while (offset < buffer.length) {
+    const start = offset
+    need(5)
+    if (buffer.readUInt32LE(offset) !== 0xfd2fb528) throw new Error(`非法 Zstandard frame：${offset}`)
+    const descriptor = buffer[offset + 4]
+    if (descriptor & 24) throw new Error('非法 Zstandard frame header')
+    offset += 5
+    const single = !!(descriptor & 32), flag = descriptor >>> 6, dictionary = descriptor & 3
+    const headerBytes = (single ? 0 : 1) + (dictionary === 3 ? 4 : dictionary) + (flag === 0 ? single ? 1 : 0 : 1 << flag)
+    need(headerBytes); offset += headerBytes
+    for (;;) {
+      need(3)
+      const header = buffer.readUIntLE(offset, 3)
+      offset += 3
+      const kind = (header >>> 1) & 3
+      if (kind === 3) throw new Error('非法 Zstandard block 类型')
+      const size = kind === 1 ? 1 : header >>> 3
+      need(size); offset += size
+      if (header & 1) break
+    }
+    if (descriptor & 4) { need(4); offset += 4 }
+    frames.push({ start, end: offset })
+    if (firstOnly) break
   }
-  for (let i = 0; i < starts.length; i += 1) {
-    frames.push({
-      start: starts[i],
-      end: i + 1 < starts.length ? starts[i + 1] : buffer.length,
-    })
-  }
-  return { frames, headerBytesBefore: starts[0] }
+  return { frames, headerBytesBefore: 0 }
 }
 
 /** 解一个完整 frame；失败时抛错（相当于 DSH 的 checksum 校验失败）。 */
@@ -100,21 +103,21 @@ export async function readHeaderFromFile(file, fsp) {
   let handle
   try {
     handle = await fsp.open(file, 'r')
-    const probeSize = Math.min(1 << 16, (await handle.stat()).size)
-    if (probeSize === 0) return null
-    const probe = Buffer.alloc(probeSize)
-    await handle.read(probe, 0, probeSize, 0)
-    const { frames } = scanFrames(probe)
-    if (frames.length === 0) return null
-    const first = frames[0]
-    if (first.end === probeSize && frames.length === 1 && probeSize < (await handle.stat()).size) {
-      // 第一个 frame 比探测窗口还大：退化为整体读取（header frame 通常只有几百字节）
-      const all = await fsp.readFile(file)
-      return readHeader(all).header
+    const size = (await handle.stat()).size
+    if (size === 0) return null
+    let probeSize = Math.min(1 << 16, size)
+    let first, probe
+    for (;;) {
+      probe = Buffer.alloc(probeSize)
+      const { bytesRead } = await handle.read(probe, 0, probeSize, 0)
+      try { first = scanFrames(probe.subarray(0, bytesRead), { firstOnly: true }).frames[0]; break }
+      catch (error) {
+        if (probeSize === size) throw error
+        probeSize = Math.min(probeSize * 2, size)
+      }
     }
-    const frameBuf = Buffer.alloc(first.end - first.start)
-    await handle.read(frameBuf, 0, frameBuf.length, first.start)
-    const plaintext = decodeFrame(frameBuf).toString('utf8')
+    if (!first) return null
+    const plaintext = decodeFrame(probe.subarray(first.start, first.end)).toString('utf8')
     if (plaintext.length === 0 || plaintext.indexOf('\n') !== plaintext.length - 1) return null
     const header = JSON.parse(plaintext)
     return header?.type === 'session' && typeof header.id === 'string' ? header : null
