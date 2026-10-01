@@ -1,54 +1,131 @@
 /**
- * 课程模式 preset 的维护：把插件仓库里的 `preset/course/` 同步到
- * `<DSH_HOME>/.agent-presets/course/`。
+ * 课程模式的形态判定与自检。
  *
- * 为什么必须由插件维护（而不是让用户手放）：
- *   1. `$DSH_HOME/.agent-presets` 可能是**换指 junction**（dsh-pack 整合包会按 profile 换指）。
- *      换指之后原来的课程模式就"消失"了——所以每次启动/每次 sync 都要能重新落进去。
- *   2. 预设是「组装 = 能力」，跟权限同级；由插件统一维护便于版本对齐与审计。
+ * 这里有一个**必须记住的版本差异**（我们踩过，浪费了好几轮）：
  *
- * 发现机制的事实（`dsh-agent-presets`）：
- *   - `$DSH_HOME/.agent-presets` 是推导出的 user 根，**不缓存**，写进去立即可见；
- *   - 目录名就是 preset id，必须匹配 `[a-z0-9][a-z0-9-]*`；
- *   - `agent.cordis.yml` 里的**相对路径从 preset 自己的目录解析**，所以技能随 preset 迁移。
+ * | | DSH 0.1.x（旧 CLI） | DSH 0.2.x（桌面端二进制） |
+ * |---|---|---|
+ * | 包 | `@deepseek-ai/dsh-agent-presets` | `@deepseek-ai/dsh-agent-preset-registry` |
+ * | 形态 | preset = **目录**（`agent.cordis.yml` + `preset.yml`） | preset = **声明式行**，注册表**不扫目录** |
+ * | 加模式 | 往 `$DSH_HOME/.agent-presets/<id>/` 放目录 | 在 profile 补丁里插一行 `@deepseek-ai/dsh-agent-preset` |
  *
- * 幂等策略：逐文件比 sha256，只写有变化的文件，并删掉本插件拥有的陈旧文件
- * （绝不碰用户自己创建的其它 preset）。
+ * 所以本插件同时提供两种形态：
+ *   · **0.2.x 主形态**（插件仓库根的 `cordis.patch.yml`）：课程模式作为 preset 声明打进 bundle 补丁，
+ *     这是桌面端唯一有效的做法；
+ *   · **0.1.x 兼容形态**（`preset/course/` 目录）：给仍在用目录扫描版的部署用。
+ *
+ * 自检必须**如实报告当前宿主是哪种形态**，不能拿旧目录存在与否去判断——否则就是撒谎
+ * （上一版就是如此：在 0.2.x 上报 installed: true，误导排查）。
  */
 
 import path from 'node:path'
 import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
-import { walkFiles, writeFileAtomic, sha256, isFile, isDir } from './fsx.js'
+import { walkFiles, writeFileAtomic, isFile, isDir } from './fsx.js'
 
-/** 本插件贡献的 preset id（目录名）。 */
+/** 本插件贡献的 preset id。 */
 export const PRESET_ID = 'course'
 
-/** 仓库内 preset 源目录：`<包根>/preset/course`。 */
-export function presetSourceDir() {
+/** 包根：`src/core` 往上两级。 */
+function packageRoot() {
   const here = path.dirname(fileURLToPath(import.meta.url)) // <包根>/src/core
-  return path.resolve(here, '..', '..', 'preset', PRESET_ID)
+  return path.resolve(here, '..', '..')
 }
 
-/** 用户根下的目标目录：`<DSH_HOME>/.agent-presets/course`。 */
+/** 0.1.x 兼容形态的源目录。 */
+export function presetSourceDir() {
+  return path.join(packageRoot(), 'preset', PRESET_ID)
+}
+
+/** 0.1.x 兼容形态的目标目录：`<DSH_HOME>/.agent-presets/course`。 */
 export function presetTargetDir(dshHome) {
   return path.join(dshHome, '.agent-presets', PRESET_ID)
 }
 
-/** preset id 合法性（与 DSH 的约束一致）。 */
+/** 0.2.x 主形态：插件自带的 profile 补丁。 */
+export function patchPath() {
+  return path.join(packageRoot(), 'cordis.patch.yml')
+}
+
+/** preset id 合法性（与 DSH 约定一致）。 */
 export function isValidPresetId(id) {
   return /^[a-z0-9][a-z0-9-]*$/.test(id)
 }
 
 /**
- * 同步 preset：把源目录内容复制到目标目录，只写变化，删除本插件拥有的陈旧文件。
+ * 读补丁文本，判断它是否声明了课程模式（0.2.x 主形态）。
+ * 只做文本标记检查——补丁本身由生成脚本保证结构合法。
+ */
+async function inspectPatch() {
+  const file = patchPath()
+  if (!isFile(file)) return { present: false, declaresCourse: false, path: file }
+  let text = ''
+  try {
+    text = await fsp.readFile(file, 'utf8')
+  } catch (err) {
+    return { present: true, declaresCourse: false, path: file, error: err.message }
+  }
+  return {
+    present: true,
+    declaresCourse:
+      text.includes('@deepseek-ai/dsh-agent-preset') && /config:\s*\n\s*id:\s*course\b/.test(text),
+    path: file,
+  }
+}
+
+/**
+ * 自检：如实报告两种形态的状态 + roster 实际发现了哪些模式。
  *
- * @param {object} opts
- * @param {string} opts.dshHome
- * @param {string} [opts.sourceDir] 源目录（默认取仓库内的 preset/course）
- * @param {boolean} [opts.force] true=无条件重写全部文件
- * @returns {Promise<{ok:boolean, target:string, written:string[], removed:string[], skipped:number, reason?:string}>}
+ * @param {string} dshHome
+ * @param {object} [ctx] 宿主 ctx（用于读 agentPresets / agentPresetRegistry 服务）
+ */
+export async function presetStatus(dshHome, ctx) {
+  const patch = await inspectPatch()
+  const legacyDir = presetTargetDir(dshHome)
+
+  const legacy = {
+    path: legacyDir,
+    installed: isFile(path.join(legacyDir, 'agent.cordis.yml')) && isFile(path.join(legacyDir, 'preset.yml')),
+    source: presetSourceDir(),
+    /** 只有 0.1.x 会读它 */
+    primary: false,
+  }
+
+  // roster 的答案（两代版本的服务名不同）
+  let roster = null
+  const service = ctx?.get?.('agentPresets') ?? ctx?.get?.('agentPresetRegistry')
+  if (service && typeof service.list === 'function') {
+    try {
+      const list = await service.list()
+      roster = {
+        total: list.length,
+        ids: list.map((p) => p.id),
+        courseVisible: list.some((p) => p.id === PRESET_ID),
+        broken: list.filter((p) => p.broken).map((p) => ({ id: p.id, reason: p.broken })),
+      }
+    } catch (err) {
+      roster = { error: err?.message ?? String(err) }
+    }
+  }
+
+  return {
+    presetId: PRESET_ID,
+    /** 0.2.x 主形态：桌面端靠它生效 */
+    patch: { ...patch, primary: true },
+    /** 0.1.x 兼容形态 */
+    legacyDir: legacy,
+    roster,
+    effective: patch.present && patch.declaresCourse ? 'patch (DSH 0.2.x)' : legacy.installed ? 'directory (DSH 0.1.x)' : 'none',
+    note: 'DSH 0.2.x 的 preset 注册表不扫描目录，只有 profile 补丁里的 preset 声明会生效。',
+  }
+}
+
+/**
+ * 0.1.x 兼容形态的同步：把 `preset/course/` 复制到 `<DSH_HOME>/.agent-presets/course/`。
+ *
+ * 对 0.2.x 是**空操作**（写进去也没人读），所以插件默认不调用它；
+ * 保留仅供仍在用目录扫描版的部署手动使用。
  */
 export async function syncCoursePreset(opts = {}) {
   const { dshHome, force = false } = opts
@@ -60,12 +137,10 @@ export async function syncCoursePreset(opts = {}) {
     return { ok: false, target: presetTargetDir(dshHome), written: [], removed: [], skipped: 0, reason: `预设源目录不存在：${source}` }
   }
   const target = presetTargetDir(dshHome)
-
   const sourceFiles = await walkFiles(source)
   if (sourceFiles.length === 0) {
     return { ok: false, target, written: [], removed: [], skipped: 0, reason: `预设源目录为空：${source}` }
   }
-  // 必须有组装文件，否则 DSH 会把它列为「损坏的 preset」
   if (!sourceFiles.some((f) => path.basename(f) === 'agent.cordis.yml')) {
     return { ok: false, target, written: [], removed: [], skipped: 0, reason: '预设源缺少 agent.cordis.yml' }
   }
@@ -73,7 +148,6 @@ export async function syncCoursePreset(opts = {}) {
   const written = []
   let skipped = 0
   const wanted = new Set()
-  // Windows 上 path.relative 用 `\`，但对外报告统一成 `/`，便于跨平台比较与展示
   const toRel = (abs, base) => path.relative(base, abs).replace(/\\/g, '/')
 
   for (const abs of sourceFiles) {
@@ -92,13 +166,11 @@ export async function syncCoursePreset(opts = {}) {
     written.push(rel)
   }
 
-  // 清理本插件拥有的陈旧文件（只删目标目录内、源里已不存在的文件）
   const removed = []
   if (isDir(target)) {
     for (const abs of await walkFiles(target)) {
       const rel = toRel(abs, target)
       if (wanted.has(rel)) continue
-      // 双保险：只删目标 preset 目录严格内部的文件
       const resolved = path.resolve(abs)
       if (!resolved.startsWith(path.resolve(target) + path.sep)) continue
       await fsp.rm(abs, { force: true })
@@ -107,45 +179,4 @@ export async function syncCoursePreset(opts = {}) {
   }
 
   return { ok: true, target, written, removed, skipped }
-}
-
-/**
- * 检查课程模式是否已就位（给 UI / 自检用）。
- * @param {string} dshHome
- */
-export async function presetStatus(dshHome) {
-  const target = presetTargetDir(dshHome)
-  const assembly = path.join(target, 'agent.cordis.yml')
-  const meta = path.join(target, 'preset.yml')
-  const skill = path.join(target, 'skills', 'course-tutor', 'SKILL.md')
-  const source = presetSourceDir()
-  let upToDate = null
-  if (isDir(source) && isFile(assembly)) {
-    const srcFiles = await walkFiles(source)
-    upToDate = true
-    for (const abs of srcFiles) {
-      const rel = path.relative(source, abs).replace(/\\/g, '/')
-      const dest = path.join(target, rel)
-      if (!isFile(dest)) {
-        upToDate = false
-        break
-      }
-      const [a, b] = await Promise.all([fsp.readFile(abs), fsp.readFile(dest)])
-      if (sha256(a) !== sha256(b)) {
-        upToDate = false
-        break
-      }
-    }
-  }
-  return {
-    id: PRESET_ID,
-    installed: isFile(assembly),
-    hasMetadata: isFile(meta),
-    hasSkill: isFile(skill),
-    target,
-    source,
-    upToDate,
-    /** 换指 junction 的提示：dsh-pack 切 profile 时可能整体换指 */
-    note: '若 .agent-presets 是换指 junction，切换 profile 后可能丢失，重新 sync 即可恢复。',
-  }
 }

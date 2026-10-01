@@ -25,7 +25,7 @@ import path from 'node:path'
 
 import { makeEndpoints } from './endpoints.js'
 import { registerRpc, CHANNEL } from './rpc.js'
-import { presetStatus, syncCoursePreset, PRESET_ID } from './core/preset.js'
+import { presetStatus } from './core/preset.js'
 
 export const name = 'dsh-course-vault'
 
@@ -74,29 +74,33 @@ function resolveRuntime(ctx) {
 }
 
 /**
- * 启动时自检课程模式 preset：**只在缺失或过期时才写盘**。
+ * 启动自检：只**报告**课程模式的实际状态，不做任何写入。
  *
- * 为什么不用 `ctx.effect()` 包这个动作：effect 的清理函数会在 dispose 时再执行一次，
- * 那是「卸载路径」，不该再做写盘。这里用一次性自检，失败只记录、不阻塞插件加载。
+ * 为什么不再同步：0.2.x（桌面端）的 preset 是 profile 补丁里的声明，注册表不扫目录，
+ * 往 `<DSH_HOME>/.agent-presets/` 写目录**没有任何效果**，只会留下误导性的残留。
+ * 0.1.x 部署若需要目录形态，显式调用 `syncCoursePreset()` 即可。
  */
-function ensurePreset(ctx, home) {
+function reportPresetStatus(ctx) {
   const log = getLogger(ctx)
-  const tick = () => {
-    presetStatus(home)
-      .then(async (status) => {
-        if (status.installed && status.upToDate) return
-        const res = await syncCoursePreset({ dshHome: home })
-        if (res.ok) {
-          log.info(
-            `[${name}] 课程模式 preset 已就位：${res.target}（写入 ${res.written.length}，清理 ${res.removed.length}）`,
-          )
-        } else {
-          log.warn(`[${name}] 课程模式 preset 未同步：${res.reason}`)
-        }
-      })
-      .catch((err) => {
-        log.warn(`[${name}] 课程模式 preset 自检失败：${err?.message ?? err}`)
-      })
+  const tick = async () => {
+    try {
+      const status = await presetStatus(resolveRuntime(ctx).home, ctx)
+      if (status.patch.present && status.patch.declaresCourse) {
+        log.info(`[${name}] 课程模式形态：${status.effective}（补丁 ${status.patch.path}）`)
+      } else {
+        log.warn(
+          `[${name}] 课程模式未就位：补丁 present=${status.patch.present} declaresCourse=${status.patch.declaresCourse}；` +
+            `旧目录形态 installed=${status.legacyDir.installed}`,
+        )
+      }
+      if (status.roster?.courseVisible) {
+        log.info(`[${name}] roster 已发现「课程模式」（共 ${status.roster.total} 个模式）`)
+      } else if (status.roster && !status.roster.error) {
+        log.warn(`[${name}] roster 未发现「课程模式」，当前：${status.roster.ids.join(', ')}`)
+      }
+    } catch (err) {
+      log.warn(`[${name}] 自检失败：${err?.message ?? err}`)
+    }
   }
   // 留出本轮加载窗口，避免与 loader 的写回竞争
   if (typeof setImmediate === 'function') setImmediate(tick)
@@ -125,7 +129,7 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
     }
     const runtime = resolveRuntime(ctx)
     log.info(
-      `[${name}] v${PLUGIN_VERSION} 已加载：通道 ${CHANNEL}，DSH_HOME=${runtime.home}（${runtime.source}），preset=${PRESET_ID}`,
+      `[${name}] v${PLUGIN_VERSION} 已加载：通道 ${CHANNEL}，DSH_HOME=${runtime.home}（${runtime.source}）`,
     )
     return true
   }
@@ -148,5 +152,5 @@ export function apply(ctx) {
   const endpoints = makeEndpoints(() => resolveRuntime(ctx), () => ctx)
 
   attachChannelWhenReady(ctx, endpoints)
-  ensurePreset(ctx, runtime.home)
+  reportPresetStatus(ctx)
 }

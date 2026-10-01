@@ -122,7 +122,8 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
     /** 课程模式 preset 是否就位（含换指 junction 的提醒）。 */
     'preset/status': async () => {
       const rt = getRuntime()
-      return presetStatus(rt.home)
+      // 传 ctx：自检要顺带问 roster 实际发现了哪些模式（两代服务名都试）
+      return presetStatus(rt.home, getCtx())
     },
 
     /** 手动同步课程模式 preset（幂等）。 */
@@ -146,7 +147,8 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
      */
     'preset/list': async () => {
       const ctx = getCtx()
-      const roster = ctx?.get?.('agentPresets')
+      // DSH 0.1.x 用 agentPresets；0.2.x 用 agentPresetRegistry
+      const roster = ctx?.get?.('agentPresets') ?? ctx?.get?.('agentPresetRegistry')
       if (!roster) {
         return {
           available: false,
