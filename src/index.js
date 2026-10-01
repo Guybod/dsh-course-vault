@@ -26,6 +26,7 @@ import path from 'node:path'
 import { makeEndpoints } from './endpoints.js'
 import { registerRpc, CHANNEL } from './rpc.js'
 import { presetStatus } from './core/preset.js'
+import { logEvent, logBootSnapshot, describeError, installProcessGuards, logFile } from './core/log.js'
 
 export const name = 'dsh-course-vault'
 
@@ -95,11 +96,16 @@ function reportPresetStatus(ctx) {
       }
       if (status.roster?.courseVisible) {
         log.info(`[${name}] roster 已发现「课程模式」（共 ${status.roster.total} 个模式）`)
+        logEvent('preset', 'roster 已发现课程模式', { total: status.roster.total, ids: status.roster.ids })
       } else if (status.roster && !status.roster.error) {
         log.warn(`[${name}] roster 未发现「课程模式」，当前：${status.roster.ids.join(', ')}`)
+        logEvent('preset', 'roster 未发现课程模式', { ids: status.roster.ids, broken: status.roster.broken })
+      } else {
+        logEvent('preset', 'roster 不可读', { roster: status.roster })
       }
     } catch (err) {
       log.warn(`[${name}] 自检失败：${err?.message ?? err}`)
+      logEvent('preset', '自检抛错', describeError(err))
     }
   }
   // 留出本轮加载窗口，避免与 loader 的写回竞争
@@ -125,18 +131,22 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
     )
     if (registered === null) {
       log.warn(`[${name}] webServer.register 不可用，${CHANNEL} 通道未挂载`)
+      logEvent('channel', 'registerRpc 返回 null（webServer.register 不可用）')
       return false
     }
     const runtime = resolveRuntime(ctx)
     log.info(
       `[${name}] v${PLUGIN_VERSION} 已加载：通道 ${CHANNEL}，DSH_HOME=${runtime.home}（${runtime.source}）`,
     )
+    logEvent('channel', '通道已挂载', { channel: CHANNEL, attempt, home: runtime.home, source: runtime.source })
     return true
   }
+  logEvent('channel', 'webServer 尚不可用，准备重试', { attempt, total: SERVICE_RETRY_DELAYS_MS.length })
   if (attempt >= SERVICE_RETRY_DELAYS_MS.length) {
     log.warn(
       `[${name}] 未找到 webServer 服务，${CHANNEL} RPC 通道未挂载；课程模式 preset 仍可用（该能力需要 web profile）`,
     )
+    logEvent('channel', '放弃挂载：始终没有 webServer 服务')
     return false
   }
   setTimeout(() => attachChannelWhenReady(ctx, endpoints, attempt + 1), SERVICE_RETRY_DELAYS_MS[attempt])
@@ -151,15 +161,30 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
  * 而 DSH 会把激活失败的 bundle 从 profile 里剔掉——用户看到的是"启动不了"。
  * 所以整个函数体包在 try/catch 里，异常只记日志、不冒泡。
  *
+ * 另外：进入时立刻往文件写一条 boot 快照。这是"让启动错误可见"的第一步——
+ * 只要日志里有这一行，就证明插件被加载到了；没有这一行，就证明失败发生在更早的
+ * 模块解析/加载阶段（那时任何插件代码都还没跑）。两种结论都极其有用。
+ *
  * @param {object} ctx cordis 上下文
  */
 export function apply(ctx) {
+  // 最先做的事：装兜底 + 写快照。此刻还没碰任何可能抛错的东西。
+  installProcessGuards()
+  logBootSnapshot('boot', { phase: 'apply-entered' })
+
   try {
     const runtime = resolveRuntime(ctx)
+    logEvent('boot', 'runtime 已解析', { home: runtime.home, source: runtime.source, profile: runtime.profileName })
+
     const endpoints = makeEndpoints(() => resolveRuntime(ctx), () => ctx)
+    logEvent('boot', '端点表已构建', { endpoints: Object.keys(endpoints).length })
+
     attachChannelWhenReady(ctx, endpoints)
     reportPresetStatus(ctx)
+
+    logEvent('boot', 'apply() 完成', { logFile: logFile() })
   } catch (err) {
+    logEvent('error', 'apply() 初始化失败（已吞掉，不影响宿主启动）', describeError(err))
     try {
       getLogger(ctx).warn(`[${name}] 初始化失败（已吞掉，不影响宿主启动）：${err?.message ?? err}`)
     } catch {

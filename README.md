@@ -229,6 +229,39 @@ ZIP 可被 Windows 自带解压、导出→校验→导入→幂等、坏包拒�
 > Windows 沙箱下不要用 `node --test test/`（需要 spawn 子进程，会命中 `spawn EPERM` 边界），
 > 用 `test/run-all.js`（进程内 import）。
 
+
+## 出事了怎么办（启动不起来 / 插件全没了）
+
+DSH 在启动失败时会**自愈**：把激活失败的 bundle 从 profile 的 `dsh.profile.bundles` 里剔掉。
+所以"插件消失了"通常意味着它上次启动时失败了。
+
+### 第一步：看插件日志
+
+插件会在 `<DSH_HOME>/logs/dsh-course-vault.log` 里写自己的一生（同步写、不抛错）：
+
+- 日志里**有** `[boot] boot {...}` → 插件被加载到了（失败在之后）；
+- 日志里**没有** → 失败发生在更早的阶段：模块**解析/加载**，或者
+  `package.json` 的 `dsh.client`/**bundle 声明**有问题（那时代码一行都没跑）。
+
+这一条判断能直接把人从"靠猜"里救出来。
+
+### 第二步：一条命令恢复
+
+```powershell
+node tools/recover-minimal-bundles.mjs default        # 先看它准备写什么：加 --dry
+```
+
+它只把 bundles 写回 `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`（桌面端一定能解析的两个），
+**不动依赖、不动 node_modules、不动你的 patch 层**，并先备份原清单。
+重启后到「插件」面板按需重新启用。
+
+### 改启动期配置的纪律（用一次"启动不了"换来的）
+
+1. **一次只改一个变量**，每步重启验证；
+2. 改之前先备份 `profiles/<name>/package.json`；
+3. 插件代码里 `apply()` 必须整体包 try/catch —— **插件失败不该拖垮宿主**；
+4. 拿不到启动日志之前，**不要**盲改 `dsh.client` / `exports` 这类启动期声明。
+
 ## 已知限制
 
 - 尚未提供图形界面：目前通过 RPC 通道 / Node API 使用；UI 挂在既有插槽上的计划见下。
