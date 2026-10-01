@@ -33,6 +33,17 @@ export function logFile() {
   return path.join(logDir(), 'dsh-course-vault.log')
 }
 
+/**
+ * 这条记录是不是来自"演练"（测试脚本）而不是真机启动？
+ *
+ * 教训：我用假 ctx 演练时写出的日志，和真机启动的日志混在同一个文件里，
+ * 后来排查时分不清哪条是谁写的，白花了好几轮。用环境变量显式标记，
+ * 真机排查时可以直接过滤掉。
+ */
+function isDrill() {
+  return process.env.DSH_COURSE_VAULT_DRILL === '1'
+}
+
 /** 把一行（或多个值）同步追加到日志；任何失败都静默吞掉。 */
 export function logEvent(scope, message, extra) {
   try {
@@ -41,6 +52,7 @@ export function logEvent(scope, message, extra) {
     const parts = [
       new Date().toISOString(),
       `pid=${process.pid}`,
+      isDrill() ? '[DRILL]' : '[app]',
       `[${scope}]`,
       typeof message === 'string' ? message : JSON.stringify(message),
     ]
