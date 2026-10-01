@@ -1,0 +1,9 @@
+node_modules/
+*.log
+
+# 会话迁移包是二进制且体积大，不要进 git（用 U 盘 / 网盘搬）
+*.dsvault
+*.dsvault.sha256
+
+# 课程学习档案的备份（导入冲突时会生成）
+*.bak-*

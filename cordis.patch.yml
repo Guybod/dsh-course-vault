@@ -1,0 +1,6 @@
+# dsh-course-vault 的 profile patch 层。
+# 只有 host 侧一个插件行：会话文件的读写必须发生在服务进程里（第三方插件拿不到
+# 浏览器的文件系统），UI 后续通过 webServer 前缀路由接。
+- insert:
+    - id: course-vault
+      name: dsh-course-vault

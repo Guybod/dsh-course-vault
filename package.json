@@ -1,0 +1,30 @@
+{
+  "name": "dsh-course-vault",
+  "version": "0.1.0",
+  "description": "DSH 插件：把当前工作区的全部会话记录导出成便携 .dsvault 包，在另一台电脑导入并恢复进会话列表（支持跨机路径映射）",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "test": "node test/run-all.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

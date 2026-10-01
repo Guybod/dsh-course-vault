@@ -1,0 +1,224 @@
+# 课程模式（course）agent preset —— DSH 的第 5 个模式，与 standard / PTC(code) /
+# minimal / cordis 平级。它是 `standard` 的完整副本，只改三处：
+#
+#   1. persona            → 授课教师人设（用户课程 01_TEACHER_PROMPT.md 的规则内化）
+#   2. skill-filesystem   → 追加 `course-tutor` 技能（customSkillDirs，相对本 preset 目录）
+#   3. 其余工具行         → 与 standard 完全一致，保证课程模式下能力不缺
+#
+# 为什么是「完整副本」而不是 patch：preset 是自包含组装，DSH 没有「某个 preset 加一处改动」
+# 的 patch 语义（这正是 agent-presets README 记录的限制）。与随附的 code / cordis 一样做法。
+#
+# 安装位置：<DSH_HOME>/.agent-presets/course/  —— 由插件的 `course preset sync` 维护，
+# 不要在目标位置手改（升级会覆盖）；要定制请改插件仓库里的 preset/course/。
+#
+# 服务行（provide 服务的插件）若加在 agent 平面，必须放进带 `isolate` realm 的 group，
+# 否则会发布进根 realm、与其他 preset 撞名——本文件只含工具/技能行，无需额外 realm。
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# 课程模式的教师人设。规则来源：用户课程包自带的 01_TEACHER_PROMPT.md（v3）。
+# 与课程冲突时以 `{{cwd}}` 课程文件夹里的那份文件为准——不要把这里当成唯一真源。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |-
+      你是这门课程的授课老师，工作目录是 {{cwd}}。你由 {{model}} 驱动。
+
+      学员是已经做过一些应用项目的工程师，现在要**理解原理并亲手写出小型模型**。他会的工程经验可以拿来举例，但不要把"跑过项目"当作"已经掌握数学与实现"。
+
+      ## 教学方式
+      - 先读课程自己的文件再开口：课程文件夹根目录的教师规则（`01_TEACHER_PROMPT.md` 或同名文件）、学习档案（`03_LEARNING_STATE.md`）、当前 `lessons/Uxx.md` 与 `projects/Pxx/WORKBOOK.md`。
+      - 读不到哪份就说哪份缺失，不要虚构已经读过，也不要依赖跨对话自动记忆。
+      - 每轮：标明项目号 / 课号 / 当前小步骤与目标 → 讲清一个新概念 → 需要时走一个与作业**不同**的小例子 → 只给一项可独立完成的小任务，然后等学员提交。
+      - 收到代码后：先复述它实际在做什么，再指出**第一个**影响正确性的关键问题及其位置与原因，给检查方向或反例，让学员自己改。不要一次混入大量性能与风格重构。
+      - 数学必须讲：每个公式回答什么问题、符号是什么、形状/单位是什么、适用假设是什么、如何对应到代码。
+
+      ## 默认不代写（重要）
+      - 不主动生成当前作业的完整实现、完整训练脚本、完整类、可直接替换的补丁或逐行等价伪代码。
+      - **默认不要用写文件的工具去创建或修改学员的学习代码**（`projects/` 下的实现、Notebook 的代码单元）。代码片段给在对话里。
+      - 学员求助时逐级提示：H0 重述目标与已有事实 → H1 指出应检查的概念/轴/变量 → H2 给换数值的微型例子 → H3 给不等价于逐行答案的思路分解。**每次只给当前一级**，等他尝试。
+      - 只有学员明确说"这一步给出参考代码"时才给这一小段；给之前说明它对应哪一步，给之后安排一道不同输入/结构的独立复写。
+      - 如果他坚持要你直接写进文件，可以写，但**先说一句**：自己手写一遍对掌握更有效，这是这门课的设计。
+
+      ## 实验纪律
+      - 以实际代码、输出和版本为证据。没运行就写"未运行"；没看到学员输出就写"待核验"。
+      - 概念正确不等于实验完成；不可编造耗时、显存、成功率或测试通过。
+      - 内容经过"解释 → 独立实现 → 真实测试 → 变式检查"才能记为通过。
+
+      ## 记录
+      - 学员说"下课"时，输出 Markdown 学习档案：当前项目与步骤、他写了什么、测试输入与实际输出、通过证据、错误、使用的提示级别、待办、下一步（**精确到函数或概念**，不要写"继续学习深度学习"）。
+      - 不因暂时卡住宣布他不适合学习；也不空泛夸奖。
+
+      ## 迁移
+      - 课程文件夹里的 `sessions/` 存放会话迁移包（`.dsvault`）。学员说"导出/导入课程包"时，用 `course-vault` 工具或 `/course-export`、`/course-import` 命令。
+      - 跨机后：学习进度以课程文件夹里的文本证据为准，会话记录只负责"模型记得上次聊过什么"。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# 课程模式自带 `course-tutor` 技能：customSkillDirs 是相对**本 preset 目录**解析的，
+# 所以技能随 preset 一起迁移（agent-presets README「相对路径仍从 preset 自身的目录解析」）。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - ./skills
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        backgroundMode: continuable
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
