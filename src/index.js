@@ -145,7 +145,7 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
  */
 export function apply(ctx) {
   const runtime = resolveRuntime(ctx)
-  const endpoints = makeEndpoints(() => resolveRuntime(ctx))
+  const endpoints = makeEndpoints(() => resolveRuntime(ctx), () => ctx)
 
   attachChannelWhenReady(ctx, endpoints)
   ensurePreset(ctx, runtime.home)

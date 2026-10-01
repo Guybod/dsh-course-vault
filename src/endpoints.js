@@ -103,8 +103,9 @@ async function readCourseCard(contentRoot) {
 /**
  * 端点表。
  * @param {() => {home: string, profileName: string, source: string}} getRuntime
+ * @param {() => object} [getCtx] 取宿主 ctx（`preset/list` 需要读 roster 服务）
  */
-export function makeEndpoints(getRuntime) {
+export function makeEndpoints(getRuntime, getCtx = () => undefined) {
   return {
     /** 运行时事实与版本。 */
     'runtime/get': async () => {
@@ -134,6 +135,41 @@ export function makeEndpoints(getRuntime) {
     'workspace/list': async () => {
       const rt = getRuntime()
       return listWorkspaces(rt.home)
+    },
+
+    /**
+     * 列出 DSH 的 agent-preset roster 实际发现到的模式（含损坏原因）。
+     *
+     * 「课程模式没出现在模式选择器里」是最容易被误判的问题：组装文件可能完全合法，
+     * 但 roster 压根没扫到用户根，或者把它判成了 broken 而选择器不显示损坏项。
+     * 这个端点把 roster 的原始答案摊开，省得靠猜。
+     */
+    'preset/list': async () => {
+      const ctx = getCtx()
+      const roster = ctx?.get?.('agentPresets')
+      if (!roster) {
+        return {
+          available: false,
+          reason: '当前宿主没有挂载 agentPresets 服务（该 profile 不含 agent-preset roster）',
+        }
+      }
+      const list = await roster.list()
+      return {
+        available: true,
+        defaultId: roster.defaultId ?? null,
+        authorable: roster.authorable ?? null,
+        // roots 是 roster 实际扫描的目录——判断「为什么没扫到」看这里
+        roots: (roster.roots ?? []).map((r) => ({ path: r.path, trust: r.trust })),
+        presets: list.map((p) => ({
+          id: p.id,
+          trust: p.trust,
+          name: p.name ?? null,
+          description: p.description ?? null,
+          order: p.order ?? null,
+          path: p.path,
+          ...(p.broken ? { broken: p.broken } : {}),
+        })),
+      }
     },
 
     /** 列出已经落盘的 .dsvault。 */
