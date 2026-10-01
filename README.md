@@ -42,6 +42,20 @@ dsh plugin --profile default add github:Guybod/dsh-course-vault
 1. 在 `ctx.webServer` 上挂 `/dsh-course` 前缀通道（第三方插件唯一稳定的直连方式）；
 2. 把**课程模式** preset 同步到 `$DSH_HOME/.agent-presets/course/`（缺失或过期才写）。
 
+### 换机时若 `dsh plugin` 报 `'pnpm' is not recognized`
+
+`dsh plugin` 会把命令转发给 pnpm，所以机器上得有 pnpm 在 PATH 里。DSH 桌面端自带一份运行时，
+但**只提供 `pnpm.mjs`，没有 `.cmd` 外壳**，命令行调用时会报找不到 pnpm。建一个 shim 即可（真实踩过）：
+
+```powershell
+$shim = "$env:USERPROFILE\.dsh\shim"
+New-Item -ItemType Directory -Path $shim -Force | Out-Null
+$node = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
+$pnpm = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs"
+Set-Content "$shim\pnpm.cmd" "@echo off`r`n`"$node`" `"$pnpm`" %*" -Encoding ASCII
+$env:PATH = "$shim;$env:PATH"   # 之后 dsh plugin 就能用
+```
+
 ## 用法
 
 ### 一键完整包（换电脑、备份）
@@ -151,12 +165,42 @@ ZIP 可被 Windows 自带解压、导出→校验→导入→幂等、坏包拒�
 
 ## 已知限制
 
-- **会话导入后是否立刻出现在 GUI 会话列表，尚未在真实服务上验证**（需重启一次服务确认）；
-  依据是 `ctx.workspaceRegistry` 启动时按 header cwd 分组索引已持久化目录。
+- 尚未提供图形界面：目前通过 RPC 通道 / Node API 使用；UI 挂在既有插槽上的计划见下。
 - 课程模式 preset 依赖 `$DSH_HOME/.agent-presets`；若该目录是被整合包换指的 junction，
   切换 profile 后可能丢失——重新 `preset/sync` 即可恢复（插件启动时也会自检）。
-- 尚未提供图形界面：目前通过 RPC 通道 / Node API 使用；UI 挂在既有插槽上的计划见下。
 - `.dsvault` 是二进制，建议加入课程仓库的 `.gitignore`，会话记录不要进 git。
+- 导出**当前正在对话的会话**时，磁盘上只有"最近一次 flush 的前缀"；已在写入的会话会被冻结在
+  导出那一刻（源文件随后继续增长），这是预期行为，不是损坏。
+
+## 实测记录（v0.1.0）
+
+在 `dsh-base + dsh-web-app` 的最小 web profile 上真启动验证过：
+
+| 验证项 | 结果 |
+|---|---|
+| 插件加载（`--dump-config` 出现 `# == dsh-course-vault` 层） | ✅ |
+| 真启动挂上 `/dsh-course` 通道（`GET /dsh-course/health` → 200） | ✅ |
+| `preset/status` → 课程模式 `installed: true, upToDate: true` | ✅ |
+| 插件自动把课程模式同步到 `$DSH_HOME/.agent-presets/course/` | ✅ |
+| `course/card` 读真实课程卡（`01_TEACHER_PROMPT.md` 等三份文件均 present） | ✅ |
+| 一键完整包：146 个课程文件 + 1 条 1.7 MB 真实会话 → 3.4 MB 包，sha256 逐项通过 | ✅ |
+| 导入到另一路径：内容 146 文件全落位、会话 header 改写为新 cwd、`id`/`agentPreset` 保留 | ✅ |
+| 幂等：同包再导 → 会话全 skip、内容全 same，不覆盖、不重复 | ✅ |
+| 导入后 DSH 能识别：`workspace/list` 出现新路径（1 条会话） | ✅ |
+
+> 仍未验证的一条：**导入的会话在 GUI 会话列表里的最终呈现需要重启一次桌面端**才能确认
+> （CLI 启动的验证实例已经能看到该 workspace，但桌面 GUI 的列表渲染未实测）。
+
+## 踩过的坑（开发时真实遇到，写下来免得再犯）
+
+1. **`inject` 会拖垮别人的 profile**：把 `webServer` / `profileContext` 写进 `inject` 后，
+   没有 `dsh-web-app` 的最小 profile 会因 `assertEntriesActivated` **整体启动失败**。
+   正确做法是 `inject = []` + 全部走 `ctx.get()`。
+2. **未 inject 的服务不能用属性访问，可选链也挡不住**：`ctx?.connection` / `ctx?.logger` 会抛
+   `cannot get property "X" without inject`，而 webserver 的 `handle()` 把路由抛错统一包成
+   **400 空响应**——症状是"通道没反应"，不是 500。定位方法是往临时日志写文件。
+3. **PowerShell 往返会毁掉 UTF-8 源文件**：用 `Get-Content -Raw` + `Set-Content` 批改中文源文件，
+   读取按 ANSI 解码、写回再编码，**中文全乱码、反引号丢失、语法直接坏掉**。改代码只用 edit 工具。
 
 ## 路线
 

@@ -90,21 +90,28 @@ function json(res, status, body) {
 
 /**
  * 注册 `/dsh-course` 通道。
- * @param {object} ctx cordis 上下文
- * @param {(endpoint: string, payload: object, ctx: object, runtime: object) => Promise<any>} dispatch
+ * @param {object} ctx cordis 上下文（用于鉴权栅栏与 effect 生命周期）
+ * @param {object} webServer 已解析到的 webServer 服务（可选服务，由调用方先取到）
+ * @param {(endpoint: string, payload: object) => Promise<any>} dispatch
  * @param {(endpoint: string) => boolean} hasEndpoint
  * @returns {(() => void) | null} 注销函数；webServer 不可用时返回 null
  */
-export function registerRpc(ctx, dispatch, hasEndpoint) {
-  const ws = ctx?.webServer
+export function registerRpc(ctx, webServer, dispatch, hasEndpoint) {
+  const ws = webServer
   if (!ws || typeof ws.register !== 'function') return null
 
   const route = {
     kind: 'prefix',
     path: CHANNEL,
     handler: async (req, res) => {
-      // 复用 connection 的 Host/Origin + 浏览器鉴权栅栏（与 /api 同策略）
-      const rejection = ctx?.connection?.requestRejection?.(req)
+      // 复用 connection 的 Host/Origin + 浏览器鉴权栅栏（与 /api 同策略）。
+      //
+      // 注意：必须走 ctx.get('connection')，**不能**写 `ctx?.connection`——
+      // cordis 对未在 inject 里声明的服务，属性访问会直接抛
+      // `cannot get property "connection" without inject`（可选链也挡不住），
+      // 而 webserver 的 handle() 会把任何抛错包成 400 空响应，表现为"通道没反应"。
+      const connection = ctx?.get?.('connection')
+      const rejection = connection?.requestRejection?.(req)
       if (rejection) {
         res.writeHead(rejection)
         res.end(rejection === 401 ? 'unauthorized' : 'forbidden')

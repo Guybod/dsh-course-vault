@@ -15,10 +15,31 @@ import * as plugin from '../src/index.js'
 import { endpointFromPath, endpointFromRequestUrl, registerRpc, ok, fail, CHANNEL } from '../src/rpc.js'
 import { makeEndpoints, parseSimpleYaml } from '../src/endpoints.js'
 
-test('插件入口导出 cordis 需要的三样东西', () => {
+test('插件入口导出 cordis 需要的三样东西，且不硬注入可选服务', () => {
   assert.equal(plugin.name, 'dsh-course-vault')
-  assert.deepEqual(plugin.inject, ['webServer', 'profileContext'])
+  // 硬注入会让「没有 dsh-web-app 的 profile」启动失败（app-boot 要求全部条目激活），
+  // 所以这里断言 inject 必须为空，可选服务一律用 ctx.get() 取。
+  assert.deepEqual(plugin.inject, [])
   assert.equal(typeof plugin.apply, 'function')
+})
+
+test('apply() 无服务可用时也不抛错（不拖垮启动）', () => {
+  const logs = []
+  const ctx = makeCtx({ logs })
+  assert.doesNotThrow(() => plugin.apply(ctx))
+})
+
+test('apply() 只通过 ctx.get 解析 webServer（属性访问会触发 cordis inject 错误）', () => {
+  const routes = []
+  const ctx = makeCtx({
+    services: {
+      profileContext: { name: 'web', home: 'C:\\fake-home' },
+      webServer: { register: (r) => (routes.push(r), () => {}) },
+    },
+  })
+  plugin.apply(ctx)
+  assert.equal(routes.length, 1, '应从 ctx.get 解析到 webServer 并注册路由')
+  assert.equal(routes[0].path, CHANNEL)
 })
 
 test('包清单声明了 DSH bundle 契约，且 patch 指向真实文件', () => {
@@ -33,22 +54,32 @@ test('包清单声明了 DSH bundle 契约，且 patch 指向真实文件', () =
   assert.match(patch, /insert:/)
 })
 
-test('apply() 在假 ctx 上不抛错，并挂上 /dsh-course 前缀路由', () => {
+/**
+ * 造一个只通过 ctx.get() 提供服务的假 ctx——与 cordis 的真实访问方式一致。
+ * 注意 logger 也必须放进服务表：cordis 里未 inject 的属性访问会抛错，
+ * 所以插件一律用 ctx.get('logger') 取。
+ */
+function makeCtx({ services = {}, logs = [] } = {}) {
+  const all = {
+    logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
+    ...services,
+  }
+  return {
+    get: (key) => all[key],
+    effect: (fn) => fn(),
+  }
+}
+
+test('apply() 挂上 /dsh-course 前缀路由（服务走 ctx.get 解析）', () => {
   const routes = []
   const logs = []
-  const ctx = {
-    profileContext: { name: 'default', home: 'C:\\fake-home', dir: 'C:\\fake-home\\profiles\\default' },
-    webServer: {
-      register(route) {
-        routes.push(route)
-        return () => {}
-      },
+  const ctx = makeCtx({
+    logs,
+    services: {
+      profileContext: { name: 'default', home: 'C:\\fake-home', dir: 'C:\\fake-home\\profiles\\default' },
+      webServer: { register: (r) => (routes.push(r), () => {}) },
     },
-    effect(fn) {
-      return fn()
-    },
-    logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
-  }
+  })
 
   plugin.apply(ctx)
   assert.equal(routes.length, 1, '应注册恰好一条路由')
@@ -57,14 +88,16 @@ test('apply() 在假 ctx 上不抛错，并挂上 /dsh-course 前缀路由', () 
   assert.ok(logs.some((m) => m.includes('已加载')), '应有加载日志')
 })
 
-test('webServer 不可用时只告警，不抛错（插件仍可为 preset 工作）', () => {
+test('webServer 始终不出现时：重试后如实告警，且全程不抛错', async () => {
   const logs = []
-  const ctx = {
-    profileContext: { name: 'default', home: 'C:\\fake-home' },
-    logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
-  }
+  const ctx = makeCtx({ logs })
   assert.doesNotThrow(() => plugin.apply(ctx))
-  assert.ok(logs.some((m) => m.includes('通道未挂载')), '应提示通道未挂载')
+  // 重试节奏 0+250+750+2000ms 走完后必须留下一条明确的 warn（不是静默）
+  await new Promise((r) => setTimeout(r, 3200))
+  assert.ok(
+    logs.some((m) => m.includes('通道未挂载')),
+    `应提示通道未挂载，实际日志：${JSON.stringify(logs)}`,
+  )
 })
 
 test('endpointFromPath 只接受通道内的安全段（URL 规范化后）', () => {
@@ -98,7 +131,7 @@ test('响应信封与官方客户端约定对称', () => {
 })
 
 test('registerRpc 在缺 webServer 时返回 null 而不是抛错', () => {
-  const result = registerRpc({}, async () => {}, () => true)
+  const result = registerRpc({}, undefined, async () => {}, () => true)
   assert.equal(result, null)
 })
 
