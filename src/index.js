@@ -36,6 +36,19 @@ export const name = 'dsh-course-vault'
  */
 export const inject = []
 
+/**
+ * 模块加载即记一条（比 `apply()` 更早）。
+ *
+ * 这条记录的价值在于**区分两种失败**：
+ *   - 日志里**没有**这条 → 模块根本没被加载/解析（失败在 loader 或 package 声明层，
+ *     比如上次那个客户端半包问题）；
+ *   - 有这条、但没有 `apply()` 的记录 → 模块解析成功、激活失败。
+ *
+ * 放在模块顶层是刻意的：它在任何服务、任何上下文可用之前就跑。
+ * `logEvent` 自己吃光所有异常，所以它不可能成为加载失败的原因。
+ */
+logEvent('module', '模块已加载（import 完成）', { file: 'src/index.js' })
+
 const PLUGIN_VERSION = '0.1.0'
 
 /** 等可选服务出现的重试节奏（毫秒）。启动早期服务可能尚未发布。 */
