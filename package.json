@@ -1,18 +1,21 @@
 {
   "name": "dsh-course-vault",
-  "version": "0.1.0",
-  "description": "DSH 插件：把当前工作区的全部会话记录导出成便携 .dsvault 包，在另一台电脑导入并恢复进会话列表（支持跨机路径映射）",
+  "version": "0.2.0",
+  "description": "DSH 插件：课程模式（苏格拉底式教学）+ 课程包一键导出/导入（课程内容 + 会话记录，支持跨机路径映射）",
   "type": "module",
   "license": "MIT",
   "private": true,
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "src",
+    "lib",
+    "preset",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -20,11 +23,21 @@
     "node": "^22.19 || >=24"
   },
   "scripts": {
-    "test": "node test/run-all.js"
+    "test": "node test/run-all.js",
+    "gen-patch": "node scripts/gen-patch.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   }
 }

@@ -234,6 +234,9 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
     /**
      * 一键导入：内容落 contentTarget，会话落 $DSH_HOME/sessions 并按 targetCwd 映射。
      * 必须显式 `apply: true` 才写盘。
+     *
+     * `registerWorkspace: true` 时顺带把课程文件夹注册成 DSH 工作区——
+     * 这样导入完就能直接在侧边栏看到它，不用再去点「添加工作区」。
      */
     'course/import': async (payload) => {
       const rt = getRuntime()
@@ -242,18 +245,68 @@ export function makeEndpoints(getRuntime, getCtx = () => undefined) {
       const vaultPath = requireString(payload?.vaultPath, 'vaultPath')
       const contentTarget = optionalString(payload?.contentTarget)
       const targetCwd = optionalString(payload?.targetCwd)
+      const applied = payload?.apply === true
       const result = await importFullVault({
         vaultPath,
         dshHome: rt.home,
         contentTarget,
         targetCwd,
-        apply: payload?.apply === true,
+        apply: applied,
         replace: payload?.replace === true,
         contentOnly: payload?.contentOnly === true,
         sessionsOnly: payload?.sessionsOnly === true,
         onProgress: collect,
       })
-      return { ...result, progress }
+
+      // 只在真正写入后才动工作区注册
+      let workspace = null
+      if (applied && payload?.registerWorkspace === true) {
+        workspace = await ensureWorkspaceRegistered(getCtx(), contentTarget ?? targetCwd)
+      }
+      return { ...result, workspace, progress }
     },
+  }
+}
+
+/**
+ * 把某个目录注册成 DSH 工作区（幂等）。
+ *
+ * 0.2.x 的服务名是 `workspaceRegistry`；0.1.x 是 `workspaceRegistry` 的同名服务，
+ * 两者都按 `{ create(path), resolveByPath(path) }` 提供，所以这里只做能力探测。
+ * 注册失败**不影响导入结果**——所以只如实回报，不抛错。
+ *
+ * @param {object} ctx 宿主 ctx
+ * @param {string|undefined} dir 要注册的目录
+ */
+async function ensureWorkspaceRegistered(ctx, dir) {
+  if (!dir) return { path: null, created: false, note: '未提供目录，跳过工作区注册' }
+  const registry = ctx?.get?.('workspaceRegistry')
+  if (!registry || typeof registry.create !== 'function') {
+    return { path: dir, created: false, note: '当前宿主没有 workspaceRegistry 服务，请手动添加工作区' }
+  }
+  try {
+    const existing = typeof registry.resolveByPath === 'function' ? await registry.resolveByPath(dir) : null
+    if (existing) {
+      return {
+        path: dir,
+        created: false,
+        alreadyRegistered: true,
+        workspaceId: existing.id ?? existing.workspaceId ?? null,
+        note: '该目录已经是工作区',
+      }
+    }
+  } catch {
+    /* 解析失败就走创建 */
+  }
+  try {
+    const created = await registry.create(dir)
+    return {
+      path: dir,
+      created: true,
+      workspaceId: created?.id ?? created?.workspaceId ?? null,
+      note: '已注册为工作区；若侧边栏没立刻出现，切换一次视图或刷新页面。',
+    }
+  } catch (err) {
+    return { path: dir, created: false, note: `注册工作区失败：${err?.message ?? err}` }
   }
 }
