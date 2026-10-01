@@ -1,3 +1,14 @@
+# ⚠️ 遗留文件：这是 DSH 0.1.x（dsh-agent-presets，扫目录）形态的组装。
+#
+# 桌面端 0.2.0 用的是 @deepseek-ai/dsh-agent-preset-registry：preset 是**声明式**的，
+# 注册表不扫描任何目录，所以本文件对桌面端**完全无效**。
+# 它保留只为兼容仍在使用 0.1.x 目录扫描版的部署。
+#
+# 桌面端真正生效的是仓库根目录的 cordis.patch.yml —— 由 scripts/gen-patch.mjs
+# 从 preset/course/persona.yml + 桌面端自带的标准模式定义生成。
+#
+# 要改教学人设：改 preset/course/persona.yml，然后重新跑生成脚本。
+
 # 课程模式（course）agent preset —— DSH 的第 5 个模式，与 standard / PTC(code) /
 # minimal / cordis 平级。它是 `standard` 的完整副本，只改三处：
 #
@@ -85,13 +96,17 @@
 
 # ── skills ──────────────────────────────────────────────────────────────────
 
-# 课程模式自带 `course-tutor` 技能：customSkillDirs 是相对**本 preset 目录**解析的，
-# 所以技能随 preset 一起迁移（agent-presets README「相对路径仍从 preset 自身的目录解析」）。
+# 说明：**不要**在这里用 `customSkillDirs: [./skills]`。
+#
+# 桌面端 0.2.0 的 preset 是内联声明（`@deepseek-ai/dsh-agent-preset` 一行），
+# **没有自己的目录**，因此相对路径会相对 patch 文件解析、指向错误位置。
+# 课程的教学流程已经内联进上面的 persona，不需要额外技能目录。
+# `skills/course-tutor/SKILL.md` 作为仓库内可读文档保留。
+#
+# skill-filesystem 仍保留：它提供标准模式同款的项目/用户技能发现
+# （项目根与 `<dshHome>/skills`），与课程流程无关。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
-  config:
-    customSkillDirs:
-      - ./skills
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

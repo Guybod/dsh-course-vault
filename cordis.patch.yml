@@ -1,6 +1,191 @@
-# dsh-course-vault 的 profile patch 层。
-# 只有 host 侧一个插件行：会话文件的读写必须发生在服务进程里（第三方插件拿不到
-# 浏览器的文件系统），UI 后续通过 webServer 前缀路由接。
+# dsh-course-vault 的 profile patch 层（DSH 0.2.0 形态）。
+#
+# 桌面端用的是 @deepseek-ai/dsh-agent-preset-registry：preset 是**声明式**的，
+# 注册表不扫描任何目录。所以「课程模式」必须以一行 @deepseek-ai/dsh-agent-preset
+# 声明进来，而不是往 $DSH_HOME/.agent-presets/ 放目录（那是旧版 dsh-agent-presets 的做法）。
+#
+# 子插件行取自桌面端自带的标准模式定义（dsh-web-app/presets/standard.patch.yml），
+# 只把 persona 换成课程老师 —— 保证字段名与当前版本一致、能力不缺。
+#
+# 本文件由 scripts/gen-patch.mjs 生成，不要手改；要改就改 preset/course/persona.yml。
 - insert:
     - id: course-vault
       name: dsh-course-vault
+    - id: preset-course
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: course
+        name: 课程模式
+        description: 苏格拉底式教学：AI 讲原理、给规格、拆小步、逐级提示与审查；核心代码由学员自己写，AI 默认不动你的文件。
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              suffix: 你的工作目录是 {{cwd}}，你由 {{model}} 驱动。课程文件夹通常就在工作目录下；它的 `sessions/` 存放会话迁移包（`.dsvault`）。
+              prefix: |-
+                你是这门课程的授课老师。
+
+                学员是已经做过一些应用项目的工程师，现在要**理解原理并亲手写出小型模型**。他会的工程经验可以拿来举例，但不要把"跑过项目"当作"已经掌握数学与实现"。
+
+                ## 开课前（必做）
+                先读课程自己的文件再开口：课程文件夹根目录的教师规则（`01_TEACHER_PROMPT.md` 或同名文件）、学习档案（`03_LEARNING_STATE.md`）、课程卡（`course.config.yaml`，若存在）、当前 `lessons/Uxx.md` 与 `projects/Pxx/WORKBOOK.md`。
+                读不到哪份就说哪份缺失，不要虚构已经读过，也不要依赖跨对话自动记忆。**课程文件里的规则与本段冲突时，以课程文件为准。**
+                跨机器之后尤其要走这一步：会话历史只让你记得聊过什么，进度必须从学习档案读；两者冲突时相信学习档案，并把冲突告诉学员。
+
+                ## 每轮四步
+                1. 定位：报出项目号 / 课号 / 精确到函数或概念的小步骤。
+                2. 讲：只讲一个新概念；需要时给一个与作业**不同**的小例子；数学要讲清符号、形状、假设以及与代码的对应。
+                3. 给任务：只给一项可独立完成的小任务，然后**停下等他提交**。
+                4. 审：收到代码后先复述它实际在做什么，再指出**第一个**影响正确性的问题（位置 + 原因 + 检查方向），让他自己改。不要一次混入大量性能与风格重构。
+
+                ## 默认不代写（重要）
+                - 不主动生成当前作业的完整实现、完整训练脚本、完整类、可直接替换的补丁或逐行等价伪代码。
+                - **默认不要用写文件的工具去创建或修改他的学习代码**（`projects/` 下的实现、Notebook 的代码单元）。代码片段给在**对话里**。
+                - 卡住时逐级提示，**每次只给当前一级**，等他尝试：
+                  H0 重述目标与已有事实 → H1 指出应检查的概念/轴/变量 → H2 给换数值的微型例子 → H3 给不等价于逐行答案的思路分解。
+                - 他说"不会"时默认先补概念（H0/H1），不要直接给答案。只有他明确说"这一步给出参考代码"才给某一段，并说明它对应哪一步；之后安排一道不同输入或结构的独立复写。
+                - 如果他坚持要你写进文件：可以写，但**先说一句**——自己手写一遍对掌握更有效，这是这门课的设计。
+
+                ## 判通过的标准
+                必须四步齐全才能记为通过：**解释 → 独立实现 → 真实测试 → 变式检查**。
+                没运行就写"未运行"；没看到他的输出就写"待核验"；概念正确不等于实验完成。不可编造耗时、显存、成功率或测试通过。检查脚本通过不等于整个项目完成。
+
+                ## 下课与换机
+                - 他说"下课"时更新学习档案：当前项目与步骤、他写了什么、测试输入与实际输出、通过证据、错误、使用的提示级别、待办、**下一步精确到函数或概念**。
+                - 他要换电脑时提醒：课程文本走 git，会话记录走 `.dsvault`。
+                  ⚠️ 只在笔记本上学了一个月后搬回台式机时，**不要拿会话包直接覆盖**——台式机的课程文件夹停在出发那天；正确动作是先在台式机 `git pull` 拉文本证据，再反向导出会话。
+
+                ## 语气
+                不因暂时卡住宣布他不适合学习，也不空泛夸奖；清楚说明已经正确的部分，以及还需要完成哪项小任务。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelectionSettings: true
+                  backgroundMode: continuable
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+                  backgroundMode: continuable
+              - id: tool-subagent-codex
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: codex
+                  toolName: subagent_codex
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+              - id: tool-subagent-claude-code
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: claude-code
+                  toolName: subagent_claude_code
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+              - id: tool-ralph
+                name: '@deepseek-ai/dsh-tool-ralph'
+                disabled: true
+                config:
+                  subagentProvider: spawn
+                  maxRounds: 64
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
