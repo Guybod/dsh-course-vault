@@ -58,7 +58,59 @@ $env:PATH = "$shim;$env:PATH"   # 之后 dsh plugin 就能用
 
 ## 用法
 
-### 一键完整包（换电脑、备份）
+## 用法（推荐：两个命令行脚本）
+
+插件自带两个脚本，**不需要装任何东西、不需要 DSH 在跑**：
+
+### 导出课程包
+
+```powershell
+# 完整包（课程内容 + 该工作区的会话记录）→ 落到 <课程文件夹>\sessions\
+node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course"
+
+# 只导会话（日常来回搬，秒级）
+node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course" --sessions-only
+
+# 忽略账本，全量重导
+node tools/export.mjs "D:\code\LLM_VLA_Handwritten_Course" --all
+```
+
+输出示例：
+
+```
+[content] 内容 146 个文件（952489 B）
+[write] 写入 …\sessions\LLM_VLA_Handwritten_Course-20261001.dsvault
+
+=== 导出完成 ===
+大小       : 0.96 MB
+sha256     : 40197868…
+内容文件   : 146 个（sha256 失败 0）
+```
+
+### 导入课程包（换电脑后）
+
+```powershell
+# 1) 先只看差异，一个字节都不写
+node tools/import.mjs "…\LLM_VLA_Handwritten_Course-20261001.dsvault" --to "D:\code\LLM_VLA_Handwritten_Course"
+
+# 2) 确认无误再落盘
+node tools/import.mjs "…\LLM_VLA_Handwritten_Course-20261001.dsvault" --to "D:\code\LLM_VLA_Handwritten_Course" --apply
+```
+
+两条默认安全线：
+
+- **不带 `--apply` 就是 dry-run**，只报「新增 / 相同 / 冲突」；
+- **冲突（本机改过、包里也有一份）默认不覆盖**，只列出来；要覆盖加 `--replace`（建议先 git 提交一次好回退）。
+- 会话永远不覆盖本机已有的同 id 会话（要覆盖同样加 `--replace`）。
+- `--target D:\别的路径` 可以把会话映射到任意工作区（会重写会话 header 的 `cwd`）。
+
+### 关于「包里有没有我的聊天记录」
+
+包里的**会话**按**工作区路径**收拢：只有「cwd 等于课程文件夹」的会话会被收进去。
+所以想让聊天记录进包，要在 DSH 里**把课程文件夹打开为工作区**（侧边栏的「工作区」加它），
+在那里上课，然后再导出——那时 `sessions` 才会有内容，导出日志会显示 `读取 N 个会话的日志`。
+
+## 用法（编程接口）
 
 ```js
 import { exportWorkspaceSessions } from 'dsh-course-vault/src/core/export.js'
