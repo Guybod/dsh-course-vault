@@ -20,14 +20,18 @@
 // 数据来源：asar 内 `dsh/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml`
 
 import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
-const ASAR = 'D:/DeepSeek Harness/resources/app.asar'
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const ASAR = process.argv[2] ?? 'D:/DeepSeek Harness/resources/app.asar'
 const STANDARD_PATCH = 'dsh/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml'
-const OUT = 'D:/code/dsh-course-vault/cordis.patch.yml'
-const PERSONA_SRC = 'D:/code/dsh-course-vault/preset/course/persona.yml'
+const OUT = path.join(ROOT, 'cordis.patch.yml')
+const PERSONA_SRC = path.join(ROOT, 'preset/course/persona.yml')
 
-const require = createRequire('C:/Users/MLTZ/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/package.json')
+// 第二个参数可指向官方 CLI 或隔离提取的 DSH runtime，使用其自带的 YAML 方言。
+const require = createRequire(path.resolve(process.argv[3] ?? path.join(ROOT, '.dev/dsh'), 'package.json'))
 const yaml = require('js-yaml')
 const JsExpr = new yaml.Type('tag:yaml.org,2002:js', {
   kind: 'scalar',

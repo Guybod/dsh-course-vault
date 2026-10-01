@@ -62,7 +62,10 @@ export async function scanSessions(dshHome) {
       } catch {
         continue
       }
-      const transcriptName = names.find(isTranscriptName)
+      const transcriptName = names.filter(isTranscriptName).sort((a, b) => {
+        const version = (n) => Number(/^session\.v(\d+)\./.exec(n)?.[1] ?? 0)
+        return version(b) - version(a) || Number(b.endsWith('.zstd')) - Number(a.endsWith('.zstd'))
+      })[0]
       if (!transcriptName) continue
       const transcript = path.join(dir, transcriptName)
       const header = await readHeaderFromFile(transcript, fsp)
@@ -103,9 +106,18 @@ export async function scanSessions(dshHome) {
  * @param {string} cwd 工作区路径
  * @returns {Promise<Array>} 按 createdAt 升序（导出顺序稳定）
  */
-export async function sessionsForWorkspace(dshHome, cwd) {
+export async function sessionsForWorkspace(dshHome, cwd, { descendants = false } = {}) {
   const all = await scanSessions(dshHome)
-  const mine = all.filter((s) => typeof s.cwd === 'string' && samePath(s.cwd, cwd))
+  const prefix = cwd.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase() + '/'
+  const mine = all.filter((s) => typeof s.cwd === 'string' && (samePath(s.cwd, cwd) || descendants && s.cwd.replace(/[\\/]+/g, '/').toLowerCase().startsWith(prefix)))
+  if (descendants) {
+    const ids = new Set(mine.map((s) => s.id))
+    let added
+    do {
+      added = false
+      for (const s of all) if (s.parentSession && ids.has(s.parentSession) && !ids.has(s.id)) { mine.push(s); ids.add(s.id); added = true }
+    } while (added)
+  }
   // 子会话排在其父会话之后，便于阅读
   mine.sort((a, b) => a.createdAt - b.createdAt)
   return mine

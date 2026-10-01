@@ -96,7 +96,7 @@ function json(res, status, body) {
  * @param {(endpoint: string) => boolean} hasEndpoint
  * @returns {(() => void) | null} 注销函数；webServer 不可用时返回 null
  */
-export function registerRpc(ctx, webServer, dispatch, hasEndpoint) {
+export function registerRpc(ctx, webServer, dispatch, hasEndpoint, transfer) {
   const ws = webServer
   if (!ws || typeof ws.register !== 'function') return null
 
@@ -115,6 +115,19 @@ export function registerRpc(ctx, webServer, dispatch, hasEndpoint) {
       if (rejection) {
         res.writeHead(rejection)
         res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+        return
+      }
+      const rawPath = (req.url ?? '').split('?')[0]
+      if (transfer && req.method === 'POST' && rawPath === `${CHANNEL}/upload`) {
+        try {
+          const originalName = new URL(req.url, 'http://local').searchParams.get('name') ?? ''
+          json(res, 200, ok(await transfer.upload(req, originalName)))
+        } catch (err) { if (!res.destroyed) json(res, 400, fail('upload-error', err.message)) }
+        return
+      }
+      if (transfer && req.method === 'GET' && rawPath.startsWith(`${CHANNEL}/download/`)) {
+        try { await transfer.download(rawPath.slice(`${CHANNEL}/download/`.length), res) }
+        catch (err) { if (!res.headersSent) json(res, 400, fail('download-error', err.message)); else res.destroy(err) }
         return
       }
       if (req.method === 'GET') {

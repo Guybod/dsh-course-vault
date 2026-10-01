@@ -1,6 +1,6 @@
 {
   "name": "dsh-course-vault",
-  "version": "0.2.0",
+  "version": "0.3.3",
   "description": "DSH 插件：课程模式（苏格拉底式教学）+ 课程包一键导出/导入（课程内容 + 会话记录，支持跨机路径映射）",
   "type": "module",
   "license": "MIT",
@@ -8,6 +8,7 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./client": "./src/client.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
@@ -25,6 +26,16 @@
     "gen-patch": "node scripts/gen-patch.mjs"
   },
   "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ],
+      "external": [
+        "react"
+      ]
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }

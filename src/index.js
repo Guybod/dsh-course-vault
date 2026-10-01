@@ -49,7 +49,7 @@ export const inject = []
  */
 logEvent('module', '模块已加载（import 完成）', { file: 'src/index.js' })
 
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.3.3'
 
 /** 等可选服务出现的重试节奏（毫秒）。启动早期服务可能尚未发布。 */
 const SERVICE_RETRY_DELAYS_MS = [0, 250, 750, 2000]
@@ -140,7 +140,8 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
       ctx,
       ws,
       async (endpoint, payload) => endpoints[endpoint](payload),
-      (endpoint) => Object.hasOwn(endpoints, endpoint),
+      (endpoint) => Object.hasOwn(endpoints, endpoint) && typeof endpoints[endpoint] === 'function',
+      endpoints.transfer,
     )
     if (registered === null) {
       log.warn(`[${name}] webServer.register 不可用，${CHANNEL} 通道未挂载`)

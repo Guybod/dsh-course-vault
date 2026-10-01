@@ -6,7 +6,7 @@
  * （实测一门课 146 文件 / 0.91 MB），所以「一键完整包」是现实的。
  *
  * 安全与正确性要点：
- *   - 打包时**排除 `.git`、`node_modules` 和存档目录本身**（否则会把上一版包套进自己）；
+ *   - 打包时排除版本库、依赖目录、Python 虚拟环境和存档目录本身；
  *   - 解包时逐文件比 sha256，区分「新增 / 相同 / 冲突」，**默认绝不覆盖冲突文件**；
  *   - 所有归档内路径都过 `assertSafeRelative`，拒绝 `..`、绝对路径、盘符。
  */
@@ -18,7 +18,7 @@ import { walkFiles, writeFileAtomic, sha256, isFile } from './fsx.js'
 import { assertSafeRelative } from './paths.js'
 
 /** 打包内容时永远跳过的目录名（任意层级）。 */
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.dsvault', 'sessions'])
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.dsvault', 'sessions', '.venv', 'venv', '__pycache__', '.pytest_cache'])
 
 /**
  * 收集课程文件夹下应入包的文件。
@@ -31,16 +31,18 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '.dsvault', 'sessions'])
  * @returns {Promise<Array<{rel:string, abs:string, size:number}>>}
  */
 export async function collectContentFiles(root, opts = {}) {
-  const skipDirs = opts.skipDirs ?? SKIP_DIRS
+  const skipDirs = new Set([...(opts.skipDirs ?? SKIP_DIRS)].map((name) => name.toLowerCase()))
   const skipRoots = (opts.skipSiblings ?? []).map((p) => path.resolve(p).toLowerCase())
-  const all = await walkFiles(root)
+  const isSkippedRoot = (abs) => {
+    const resolved = path.resolve(abs).toLowerCase()
+    return skipRoots.some((s) => resolved === s || resolved.startsWith(s + path.sep))
+  }
+  const all = await walkFiles(root, [], { skipDirectory: (abs, name) => skipDirs.has(name.toLowerCase()) || isSkippedRoot(abs) })
   const out = []
   for (const abs of all) {
     const rel = path.relative(root, abs)
     const parts = rel.split(path.sep)
-    if (parts.some((seg) => skipDirs.has(seg))) continue
-    const resolved = path.resolve(abs).toLowerCase()
-    if (skipRoots.some((s) => resolved === s || resolved.startsWith(s + path.sep))) continue
+    if (parts.some((seg) => skipDirs.has(seg.toLowerCase())) || isSkippedRoot(abs)) continue
     let stat
     try {
       stat = await fsp.stat(abs)
@@ -68,7 +70,7 @@ export async function readContentEntries(root, files) {
     try {
       data = await fsp.readFile(f.abs)
     } catch {
-      continue // 读不到就跳过，不因单个文件失败整包
+      throw new Error(`课程文件读取失败，未生成迁移包：${f.rel}`)
     }
     const name = `.dsvault/content/${f.rel}`
     entries.push({ name, data })
@@ -95,8 +97,11 @@ export async function planContentImport(contentRoot, records, readEntry) {
   const create = []
   const same = []
   const conflict = []
+  const seen = new Set()
   for (const record of records ?? []) {
     const rel = assertSafeRelative(record.path)
+    if (seen.has(rel.toLowerCase())) throw new Error(`课程内容目标重复：${rel}`)
+    seen.add(rel.toLowerCase())
     const target = path.join(contentRoot, rel)
     let existing = null
     if (isFile(target)) {
@@ -107,7 +112,9 @@ export async function planContentImport(contentRoot, records, readEntry) {
       }
     }
     const data = readEntry(record.file)
-    if (data === undefined) continue
+    if (data === undefined) throw new Error(`课程包缺少文件：${record.file}`)
+    if (typeof record.sha256 !== 'string' || sha256(data) !== record.sha256) throw new Error(`课程文件 sha256 校验失败：${rel}`)
+    await assertNoSymlinkTarget(target)
     if (existing === null) {
       create.push({ path: rel, target, bytes: data.length, data })
     } else if (existing === record.sha256) {
@@ -126,6 +133,15 @@ export async function planContentImport(contentRoot, records, readEntry) {
   return { create, same, conflict }
 }
 
+/** 导入前检查现存的所有祖先，防止通过目录链接写到课程之外。 */
+async function assertNoSymlinkTarget(target) {
+  for (let p = path.resolve(target); ; p = path.dirname(p)) {
+    try { if ((await fsp.lstat(p)).isSymbolicLink()) throw new Error(`导入目标含符号链接：${p}`) }
+    catch (error) { if (error.code !== 'ENOENT') throw error }
+    if (p === path.dirname(p)) break
+  }
+}
+
 /**
  * 落盘内容导入结果。
  *
@@ -137,6 +153,7 @@ export async function applyContentImport(plan, opts = {}) {
   const written = []
   const skipped = []
   for (const item of plan.create ?? []) {
+    await assertNoSymlinkTarget(item.target)
     await writeFileAtomic(item.target, item.data)
     written.push(item.path)
     opts.onProgress?.('content', `新增 ${item.path}`)
@@ -147,6 +164,9 @@ export async function applyContentImport(plan, opts = {}) {
       opts.onProgress?.('content', `冲突跳过 ${item.path}`)
       continue
     }
+    await assertNoSymlinkTarget(item.target)
+    const original = await fsp.readFile(item.target)
+    await writeFileAtomic(`${item.target}.bak-${Date.now()}`, original)
     await writeFileAtomic(item.target, item.data)
     written.push(item.path)
     opts.onProgress?.('content', `覆盖 ${item.path}`)
