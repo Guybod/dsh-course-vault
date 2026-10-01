@@ -145,12 +145,25 @@ function attachChannelWhenReady(ctx, endpoints, attempt = 0) {
 
 /**
  * 插件入口。
+ *
+ * **绝不抛出**：本插件的任何失败都不该让 DSH 启动失败。
+ * 上一版就因为这里的异常（客户端半包配置）导致条目激活失败，
+ * 而 DSH 会把激活失败的 bundle 从 profile 里剔掉——用户看到的是"启动不了"。
+ * 所以整个函数体包在 try/catch 里，异常只记日志、不冒泡。
+ *
  * @param {object} ctx cordis 上下文
  */
 export function apply(ctx) {
-  const runtime = resolveRuntime(ctx)
-  const endpoints = makeEndpoints(() => resolveRuntime(ctx), () => ctx)
-
-  attachChannelWhenReady(ctx, endpoints)
-  reportPresetStatus(ctx)
+  try {
+    const runtime = resolveRuntime(ctx)
+    const endpoints = makeEndpoints(() => resolveRuntime(ctx), () => ctx)
+    attachChannelWhenReady(ctx, endpoints)
+    reportPresetStatus(ctx)
+  } catch (err) {
+    try {
+      getLogger(ctx).warn(`[${name}] 初始化失败（已吞掉，不影响宿主启动）：${err?.message ?? err}`)
+    } catch {
+      /* 连日志都拿不到时也必须静默 */
+    }
+  }
 }
